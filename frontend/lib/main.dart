@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
 import 'services/api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
+import 'mock_steps_provider.dart';
+import 'dart:async';
+import 'friends_screen.dart';
+import 'dart:convert';
+import 'package:fl_chart/fl_chart.dart';
 
 void main() {
   runApp(const MyApp());
@@ -9,6 +15,8 @@ void main() {
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
+  static _MyAppState? of(BuildContext context) => context.findAncestorStateOfType<_MyAppState>();
+
   @override
   State<MyApp> createState() => _MyAppState();
 }
@@ -16,11 +24,13 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   bool _isAuthenticated = false;
   bool _showLogin = true;
+  String _theme = 'light';
 
   @override
   void initState() {
     super.initState();
     _checkAuth();
+    _fetchTheme();
   }
 
   Future<void> _checkAuth() async {
@@ -30,10 +40,25 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
+  Future<void> _fetchTheme() async {
+    final api = ApiService();
+    final settings = await api.fetchSettings();
+    setState(() {
+      _theme = settings?.theme ?? 'light';
+    });
+  }
+
+  void updateTheme(String theme) {
+    setState(() {
+      _theme = theme;
+    });
+  }
+
   void _onAuthenticated() {
     setState(() {
       _isAuthenticated = true;
     });
+    _fetchTheme(); // Refetch theme after login
   }
 
   void _toggleAuthScreen() {
@@ -53,12 +78,17 @@ class _MyAppState extends State<MyApp> {
 
   @override
   Widget build(BuildContext context) {
+    final themeData = _theme == 'dark'
+        ? ThemeData.dark().copyWith(
+            colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
+          )
+        : ThemeData.light().copyWith(
+            colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.light),
+          );
     if (!_isAuthenticated) {
       return MaterialApp(
         title: 'Healthy Summer',
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        ),
+        theme: themeData,
         home: _showLogin
             ? LoginScreen(onAuthenticated: _onAuthenticated, onSwitch: _toggleAuthScreen)
             : RegisterScreen(onRegistered: _onAuthenticated, onSwitch: _toggleAuthScreen),
@@ -66,9 +96,7 @@ class _MyAppState extends State<MyApp> {
     }
     return MaterialApp(
       title: 'Healthy Summer',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      ),
+      theme: themeData,
       home: MainNavigation(onLogout: _logout),
     );
   }
@@ -96,6 +124,10 @@ class _LoginScreenState extends State<LoginScreen> {
     final token = await api.login(_email, _password);
     setState(() { _loading = false; });
     if (token != null) {
+      final me = await api.getMe();
+      if (me != null) {
+        api.currentUserId = me.id;
+      }
       widget.onAuthenticated();
     } else {
       setState(() { _error = 'Invalid credentials'; });
@@ -174,7 +206,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final success = await api.register(_name, _email, _password);
     setState(() { _loading = false; });
     if (success) {
-      // Auto-login after registration
       final token = await api.login(_email, _password);
       if (token != null) {
         widget.onRegistered();
@@ -252,9 +283,12 @@ class _MainNavigationState extends State<MainNavigation> {
   int _selectedIndex = 0;
 
   static List<Widget> _screensBuilder(VoidCallback? onLogout) => <Widget>[
-    UsersScreen(),
-    WorkoutsScreen(),
+    DashboardScreen(),
+    FriendsScreen(),
+    FeedScreen(), // new
+    CombinedWorkoutsScreen(),
     WaterScreen(),
+    StepsScreen(),
     DietScreen(),
     PeriodsScreen(),
     AwardsScreen(),
@@ -267,8 +301,11 @@ class _MainNavigationState extends State<MainNavigation> {
 
   static const List<BottomNavigationBarItem> _navItems = [
     BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
+    BottomNavigationBarItem(icon: Icon(Icons.group), label: 'Friends'),
+    BottomNavigationBarItem(icon: Icon(Icons.rss_feed), label: 'Feed'), // new
     BottomNavigationBarItem(icon: Icon(Icons.fitness_center), label: 'Workouts'),
     BottomNavigationBarItem(icon: Icon(Icons.local_drink), label: 'Water'),
+    BottomNavigationBarItem(icon: Icon(Icons.directions_walk), label: 'Steps'),
     BottomNavigationBarItem(icon: Icon(Icons.restaurant), label: 'Diet'),
     BottomNavigationBarItem(icon: Icon(Icons.calendar_today), label: 'Periods'),
     BottomNavigationBarItem(icon: Icon(Icons.emoji_events), label: 'Awards'),
@@ -310,49 +347,256 @@ class _MainNavigationState extends State<MainNavigation> {
   }
 }
 
-class UsersScreen extends StatelessWidget {
-  final ApiService api = ApiService();
+class DashboardScreen extends StatefulWidget {
+  const DashboardScreen({super.key});
 
-  UsersScreen({super.key});
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  final ApiService api = ApiService();
+  Map<String, dynamic>? _summary;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchSummary();
+    _fetchUserProfile();
+    _fetchSettings();
+  }
+
+  Future<void> _fetchSummary() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      final summary = await api.fetchWeeklySummary();
+      setState(() { _summary = summary; _loading = false; });
+    } catch (e) {
+      setState(() { _error = 'Failed to load summary'; _loading = false; });
+    }
+  }
+
+  Future<void> _fetchUserProfile() async {
+    setState(() { _loading = true; });
+    final user = await api.getMe();
+    setState(() {
+      _loading = false;
+      if (user != null) {
+      } else {
+        _error = 'Failed to load user profile';
+      }
+    });
+  }
+
+  Future<void> _fetchSettings() async {
+    setState(() { _loading = true; });
+    final settings = await api.getSettings();
+    setState(() {
+      _loading = false;
+      if (settings != null) {
+      } else {
+        _error = 'Failed to load settings';
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<User>>(
-      future: api.fetchUsers(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const CircularProgressIndicator();
-        } else if (snapshot.hasError) {
-          return Text('Error: \\${snapshot.error}');
-        } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return const Text('No users found.');
-        } else {
-          final users = snapshot.data!;
-          return ListView.builder(
-            itemCount: users.length,
-            itemBuilder: (context, index) {
-              final user = users[index];
-              return ListTile(
-                leading: CircleAvatar(child: Text(user.name[0])),
-                title: Text(user.name),
-                subtitle: Text(user.email),
-              );
-            },
-          );
-        }
-      },
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(child: Text(_error!, style: const TextStyle(color: Colors.red)));
+    }
+    final s = _summary ?? {};
+    final daily = (s['daily_calories'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('This Week', style: Theme.of(context).textTheme.headlineMedium),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              _SummaryCard(
+                icon: Icons.directions_walk,
+                label: 'Steps',
+                value: s['steps']?.toString() ?? '-',
+                color: Colors.blue,
+              ),
+              const SizedBox(width: 12),
+              _SummaryCard(
+                icon: Icons.fitness_center,
+                label: 'Workouts',
+                value: s['workouts']?.toString() ?? '-',
+                color: Colors.green,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _SummaryCard(
+                icon: Icons.local_fire_department,
+                label: 'Calories Burned',
+                value: s['workout_calories']?.toString() ?? '-',
+                color: Colors.red,
+              ),
+              const SizedBox(width: 12),
+              _SummaryCard(
+                icon: Icons.restaurant,
+                label: 'Calories Consumed',
+                value: s['diet_calories']?.toString() ?? '-',
+                color: Colors.orange,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _SummaryCard(
+                icon: Icons.local_drink,
+                label: 'Water (ml)',
+                value: s['water_ml']?.toString() ?? '-',
+                color: Colors.cyan,
+              ),
+              const SizedBox(width: 12),
+              _SummaryCard(
+                icon: Icons.timer,
+                label: 'Workout Minutes',
+                value: s['workout_minutes']?.toString() ?? '-',
+                color: Colors.purple,
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Text('Calories Burned vs Consumed', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 220,
+            child: _CaloriesChart(daily: daily),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.refresh),
+            label: const Text('Refresh'),
+            onPressed: _fetchSummary,
+          ),
+        ],
+      ),
     );
   }
 }
 
-class WorkoutsScreen extends StatefulWidget {
-  WorkoutsScreen({super.key});
+class _CaloriesChart extends StatelessWidget {
+  final List<Map<String, dynamic>> daily;
+  const _CaloriesChart({required this.daily});
 
   @override
-  State<WorkoutsScreen> createState() => _WorkoutsScreenState();
+  Widget build(BuildContext context) {
+    if (daily.isEmpty) {
+      return const Center(child: Text('No data'));
+    }
+    final spotsBurned = <FlSpot>[];
+    final spotsConsumed = <FlSpot>[];
+    final labels = <String>[];
+    for (var i = 0; i < daily.length; i++) {
+      final d = daily[i];
+      spotsBurned.add(FlSpot(i.toDouble(), (d['burned'] ?? 0).toDouble()));
+      spotsConsumed.add(FlSpot(i.toDouble(), (d['consumed'] ?? 0).toDouble()));
+      labels.add((d['date'] as String).substring(5));
+    }
+    return LineChart(
+      LineChartData(
+        minY: 0,
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(showTitles: true, reservedSize: 40),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx < 0 || idx >= labels.length) return const SizedBox.shrink();
+                return Text(labels[idx], style: const TextStyle(fontSize: 10));
+              },
+              interval: 1,
+              reservedSize: 32,
+            ),
+          ),
+          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        gridData: FlGridData(show: true),
+        borderData: FlBorderData(show: true),
+        lineBarsData: [
+          LineChartBarData(
+            spots: spotsBurned,
+            isCurved: true,
+            color: Colors.red,
+            barWidth: 3,
+            dotData: FlDotData(show: false),
+            belowBarData: BarAreaData(show: false),
+            isStrokeCapRound: true,
+          ),
+          LineChartBarData(
+            spots: spotsConsumed,
+            isCurved: true,
+            color: Colors.orange,
+            barWidth: 3,
+            dotData: FlDotData(show: false),
+            belowBarData: BarAreaData(show: false),
+            isStrokeCapRound: true,
+          ),
+        ],
+        lineTouchData: LineTouchData(enabled: true),
+      ),
+    );
+  }
 }
 
-class _WorkoutsScreenState extends State<WorkoutsScreen> {
+class _SummaryCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+  const _SummaryCard({required this.icon, required this.label, required this.value, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Card(
+        color: color.withOpacity(0.1),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: color, size: 32),
+              const SizedBox(height: 8),
+              Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text(value, style: Theme.of(context).textTheme.titleLarge?.copyWith(color: color)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class CombinedWorkoutsScreen extends StatefulWidget {
+  CombinedWorkoutsScreen({super.key});
+
+  @override
+  State<CombinedWorkoutsScreen> createState() => _CombinedWorkoutsScreenState();
+}
+
+class _CombinedWorkoutsScreenState extends State<CombinedWorkoutsScreen> {
   final ApiService api = ApiService();
   List<Workout> _workouts = [];
   bool _loading = false;
@@ -363,18 +607,155 @@ class _WorkoutsScreenState extends State<WorkoutsScreen> {
   Workout? _editingWorkout;
   final _formKey = GlobalKey<FormState>();
   String _type = '';
+  String _customType = '';
   String _duration = '';
+  String _intensity = 'medium';
+  String _calories = '';
+  String _location = '';
+  double? _userWeight;
+  bool _caloriesManuallyEdited = false;
+  String _category = '';
+  String _customCategory = '';
+
+  DateTime? _startDate;
+  DateTime? _endDate;
+  String _filterCategory = '';
+  String _filterType = '';
+
+  final List<String> _typeOptions = [
+    'Running',
+    'Swimming',
+    'Gym',
+    'Cycling',
+    'Other',
+  ];
+  final List<String> _intensityOptions = [
+    'low',
+    'medium',
+    'high',
+  ];
+  final List<String> _categoryOptions = [
+    'Cardio',
+    'Strength',
+    'Flexibility',
+    'Balance',
+    'Other',
+  ];
+  final List<String> _filterCategoryOptions = [
+    '', 'Cardio', 'Strength', 'Flexibility', 'Balance', 'Other',
+  ];
+  final List<String> _filterTypeOptions = [
+    '', 'Running', 'Swimming', 'Gym', 'Cycling', 'Other',
+  ];
 
   @override
   void initState() {
     super.initState();
+    final today = DateTime.now();
+    _startDate = today;
+    _endDate = today;
+    _fetchUserWeight();
     _fetchWorkouts();
+  }
+
+  Future<void> _fetchUserWeight() async {
+    final user = await api.getMe();
+    setState(() {
+      _userWeight = user?.weight ?? 70;
+    });
+  }
+
+  void _maybeAutoCalculateCalories() {
+    final type = _type == 'Other' ? _customType : _type;
+    if (!_typeOptions.contains(type) || type == 'Other' || _caloriesManuallyEdited) return;
+    if (_duration.isEmpty || _intensity.isEmpty || _userWeight == null) return;
+    final durationMin = int.tryParse(_duration) ?? 0;
+    if (durationMin <= 0) return;
+    double met = 0;
+    switch (type.toLowerCase()) {
+      case 'running':
+        if (_intensity == 'low') met = 6.0;
+        else if (_intensity == 'medium') met = 8.0;
+        else if (_intensity == 'high') met = 12.0;
+        break;
+      case 'cycling':
+        if (_intensity == 'low') met = 4.0;
+        else if (_intensity == 'medium') met = 8.0;
+        else if (_intensity == 'high') met = 12.0;
+        break;
+      case 'swimming':
+        if (_intensity == 'low') met = 6.0;
+        else if (_intensity == 'medium') met = 8.0;
+        else if (_intensity == 'high') met = 10.0;
+        break;
+      case 'gym':
+      case 'gym (weight training)':
+        if (_intensity == 'low') met = 3.0;
+        else if (_intensity == 'medium') met = 6.0;
+        else if (_intensity == 'high') met = 8.0;
+        break;
+      default:
+        return;
+    }
+    final caloriesPerMinute = (met * 3.5 * _userWeight!) / 200.0;
+    final calories = (caloriesPerMinute * durationMin).round();
+    setState(() {
+      _calories = calories.toString();
+    });
+  }
+
+  void _onTypeChanged(String? v) {
+    setState(() {
+      _type = v ?? '';
+      if (_type != 'Other') _customType = '';
+      _caloriesManuallyEdited = false;
+    });
+    _maybeAutoCalculateCalories();
+  }
+
+  void _onCustomTypeChanged(String v) {
+    setState(() {
+      _customType = v;
+      _caloriesManuallyEdited = false;
+    });
+    _maybeAutoCalculateCalories();
+  }
+
+  void _onDurationChanged(String v) {
+    setState(() {
+      _duration = v;
+      _caloriesManuallyEdited = false;
+    });
+    _maybeAutoCalculateCalories();
+  }
+
+  void _onIntensityChanged(String? v) {
+    setState(() {
+      _intensity = v ?? 'medium';
+      _caloriesManuallyEdited = false;
+    });
+    _maybeAutoCalculateCalories();
+  }
+
+  void _onCaloriesChanged(String v) {
+    setState(() {
+      _calories = v;
+      _caloriesManuallyEdited = true;
+    });
   }
 
   Future<void> _fetchWorkouts() async {
     setState(() { _loading = true; });
     try {
-      final workouts = await api.fetchWorkouts();
+      final params = <String, String>{};
+      if (_startDate != null) params['start'] = DateFormat('yyyy-MM-dd').format(_startDate!);
+      if (_endDate != null) {
+        final inclusiveEnd = _endDate!.add(const Duration(days: 1));
+        params['end'] = DateFormat('yyyy-MM-dd').format(inclusiveEnd);
+      }
+      if (_filterCategory.isNotEmpty) params['category'] = _filterCategory;
+      if (_filterType.isNotEmpty) params['type'] = _filterType;
+      final workouts = await api.fetchWorkoutsWithParams(params);
       setState(() { _workouts = workouts; _loading = false; });
     } catch (e) {
       setState(() { _error = 'Failed to load workouts'; _loading = false; });
@@ -387,30 +768,50 @@ class _WorkoutsScreenState extends State<WorkoutsScreen> {
       _editing = false;
       _editingWorkout = null;
       _type = '';
+      _customType = '';
       _duration = '';
+      _intensity = 'medium';
+      _calories = '';
+      _location = '';
+      _caloriesManuallyEdited = false;
+      _category = '';
+      _customCategory = '';
     });
   }
 
-  void _openEditForm(Workout workout) {
+  void _openEditForm(Workout w) {
     setState(() {
       _showForm = true;
       _editing = true;
-      _editingWorkout = workout;
-      _type = workout.type;
-      _duration = workout.duration.toString();
+      _editingWorkout = w;
+      _type = w.type;
+      _customType = '';
+      _duration = w.duration.toString();
+      _intensity = w.intensity;
+      _calories = w.calories.toString();
+      _location = w.location;
+      _category = w.category;
+      _customCategory = '';
+      _caloriesManuallyEdited = false;
     });
   }
 
   Future<void> _submitForm() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() { _formLoading = true; });
+    final workout = Workout(
+      id: _editing ? _editingWorkout!.id : 0,
+      userId: 0,
+      type: _type == 'Other' ? _customType : _type,
+      duration: int.tryParse(_duration) ?? 0,
+      intensity: _intensity,
+      calories: int.tryParse(_calories) ?? 0,
+      location: _location,
+      category: _category == 'Other' ? _customCategory : _category,
+      createdAt: _editing ? _editingWorkout!.createdAt : null,
+    );
     if (_editing && _editingWorkout != null) {
-      final updated = await api.updateWorkout(Workout(
-        id: _editingWorkout!.id,
-        userId: _editingWorkout!.userId,
-        type: _type,
-        duration: int.tryParse(_duration) ?? 0,
-      ));
+      final updated = await api.updateWorkout(workout);
       setState(() { _formLoading = false; _showForm = false; });
       if (updated != null) {
         _fetchWorkouts();
@@ -419,12 +820,7 @@ class _WorkoutsScreenState extends State<WorkoutsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to update workout')));
       }
     } else {
-      final created = await api.createWorkout(Workout(
-        id: 0,
-        userId: 0,
-        type: _type,
-        duration: int.tryParse(_duration) ?? 0,
-      ));
+      final created = await api.createWorkout(workout);
       setState(() { _formLoading = false; _showForm = false; });
       if (created != null) {
         _fetchWorkouts();
@@ -445,6 +841,32 @@ class _WorkoutsScreenState extends State<WorkoutsScreen> {
     }
   }
 
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() { _startDate = picked; });
+      _fetchWorkouts();
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() { _endDate = picked; });
+      _fetchWorkouts();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -454,10 +876,58 @@ class _WorkoutsScreenState extends State<WorkoutsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('Workouts', style: Theme.of(context).textTheme.headlineMedium),
+              Text('Workouts & Activity History', style: Theme.of(context).textTheme.headlineMedium),
               IconButton(
                 icon: Icon(_showForm ? Icons.close : Icons.add),
                 onPressed: () => setState(() => _showForm ? _showForm = false : _openCreateForm()),
+              ),
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: _fetchWorkouts,
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _pickStartDate,
+                  child: Text(_startDate != null ? 'From: ' + DateFormat('yyyy-MM-dd').format(_startDate!) : 'From'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _pickEndDate,
+                  child: Text(_endDate != null ? 'To: ' + DateFormat('yyyy-MM-dd').format(_endDate!) : 'To'),
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _filterCategory,
+                  items: _filterCategoryOptions.map((cat) => DropdownMenuItem(
+                    value: cat,
+                    child: Text(cat.isEmpty ? 'All Categories' : cat),
+                  )).toList(),
+                  onChanged: (v) { setState(() { _filterCategory = v ?? ''; }); _fetchWorkouts(); },
+                  decoration: const InputDecoration(labelText: 'Category'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _filterType,
+                  items: _filterTypeOptions.map((type) => DropdownMenuItem(
+                    value: type,
+                    child: Text(type.isEmpty ? 'All Types' : type),
+                  )).toList(),
+                  onChanged: (v) { setState(() { _filterType = v ?? ''; }); _fetchWorkouts(); },
+                  decoration: const InputDecoration(labelText: 'Type'),
+                ),
               ),
             ],
           ),
@@ -466,18 +936,74 @@ class _WorkoutsScreenState extends State<WorkoutsScreen> {
               key: _formKey,
               child: Column(
                 children: [
-                  TextFormField(
+                  DropdownButtonFormField<String>(
+                    value: _type.isNotEmpty ? _type : null,
+                    items: _typeOptions.map((type) => DropdownMenuItem(
+                      value: type,
+                      child: Text(type),
+                    )).toList(),
+                    onChanged: _onTypeChanged,
                     decoration: const InputDecoration(labelText: 'Type'),
-                    initialValue: _type,
-                    onChanged: (v) => _type = v,
-                    validator: (v) => v == null || v.isEmpty ? 'Enter workout type' : null,
+                    validator: (v) => v == null || v.isEmpty ? 'Select workout type' : null,
                   ),
+                  if (_type == 'Other')
+                    TextFormField(
+                      decoration: const InputDecoration(labelText: 'Custom Type'),
+                      initialValue: _customType,
+                      onChanged: _onCustomTypeChanged,
+                      validator: (v) => _type == 'Other' && (v == null || v.isEmpty) ? 'Enter custom type' : null,
+                    ),
                   TextFormField(
                     decoration: const InputDecoration(labelText: 'Duration (minutes)'),
                     initialValue: _duration,
                     keyboardType: TextInputType.number,
-                    onChanged: (v) => _duration = v,
+                    onChanged: _onDurationChanged,
                     validator: (v) => v == null || v.isEmpty ? 'Enter duration' : null,
+                  ),
+                  DropdownButtonFormField<String>(
+                    value: _intensity,
+                    items: _intensityOptions.map((level) => DropdownMenuItem(
+                      value: level,
+                      child: Text(level[0].toUpperCase() + level.substring(1)),
+                    )).toList(),
+                    onChanged: _onIntensityChanged,
+                    decoration: const InputDecoration(labelText: 'Intensity'),
+                  ),
+                  (_type == 'Other')
+                    ? TextFormField(
+                        decoration: const InputDecoration(labelText: 'Calories burned'),
+                        initialValue: _calories,
+                        keyboardType: TextInputType.number,
+                        onChanged: _onCaloriesChanged,
+                        validator: (v) => v == null || v.isEmpty ? 'Enter calories' : null,
+                      )
+                    : TextFormField(
+                        decoration: const InputDecoration(labelText: 'Calories burned (auto)'),
+                        initialValue: _calories,
+                        enabled: false,
+                      ),
+                  DropdownButtonFormField<String>(
+                    value: _category.isNotEmpty ? _category : null,
+                    items: _categoryOptions.map((cat) => DropdownMenuItem(
+                      value: cat,
+                      child: Text(cat),
+                    )).toList(),
+                    onChanged: (v) => setState(() { _category = v ?? ''; if (_category != 'Other') _customCategory = ''; }),
+                    decoration: const InputDecoration(labelText: 'Category'),
+                    validator: (v) => v == null || v.isEmpty ? 'Select category' : null,
+                  ),
+                  if (_category == 'Other')
+                    TextFormField(
+                      decoration: const InputDecoration(labelText: 'Custom Category'),
+                      initialValue: _customCategory,
+                      onChanged: (v) => _customCategory = v,
+                      validator: (v) => _category == 'Other' && (v == null || v.isEmpty) ? 'Enter custom category' : null,
+                    ),
+                  TextFormField(
+                    decoration: const InputDecoration(labelText: 'Location'),
+                    initialValue: _location,
+                    onChanged: (v) => _location = v,
+                    validator: (v) => v == null || v.isEmpty ? 'Enter location' : null,
                   ),
                   const SizedBox(height: 8),
                   _formLoading
@@ -505,7 +1031,7 @@ class _WorkoutsScreenState extends State<WorkoutsScreen> {
                   return ListTile(
                     leading: const Icon(Icons.fitness_center),
                     title: Text(w.type),
-                    subtitle: Text('Duration: ${w.duration} min'),
+                    subtitle: Text('Category: ${w.category}, Duration: ${w.duration} min, Intensity: ${w.intensity}, Calories: ${w.calories}, Location: ${w.location}, Time: ${w.createdAt != null ? DateFormat('yyyy-MM-dd HH:mm').format(w.createdAt!) : ''}'),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -548,10 +1074,53 @@ class _WaterScreenState extends State<WaterScreen> {
   final _formKey = GlobalKey<FormState>();
   String _amount = '';
 
+  int _waterGoal = 2000;
+  bool _goalLoading = false;
+  bool _editingGoal = false;
+  String _goalInput = '';
+
   @override
   void initState() {
     super.initState();
     _fetchWaterIntakes();
+    _fetchWaterGoal();
+  }
+
+  Future<void> _fetchWaterGoal() async {
+    setState(() { _goalLoading = true; });
+    final settings = await api.fetchSettings();
+    setState(() {
+      _waterGoal = settings?.waterGoal ?? 2000;
+      _goalInput = _waterGoal.toString();
+      _goalLoading = false;
+    });
+  }
+
+  Future<void> _updateWaterGoal() async {
+    setState(() { _goalLoading = true; });
+    final settings = await api.fetchSettings();
+    if (settings != null) {
+      final updated = await api.updateSettings(Settings(
+        userId: settings.userId,
+        notificationsEnabled: settings.notificationsEnabled,
+        theme: settings.theme,
+        waterGoal: int.tryParse(_goalInput) ?? _waterGoal,
+        caloriesGoal: settings.caloriesGoal,
+        stepsGoal: settings.stepsGoal, // add this line
+      ));
+      setState(() {
+        _editingGoal = false;
+        _waterGoal = updated?.waterGoal ?? _waterGoal;
+        _goalLoading = false;
+      });
+    } else {
+      setState(() { _goalLoading = false; });
+    }
+  }
+
+  int get _todayIntake {
+    final today = DateTime.now();
+    return _waterIntakes.fold(0, (sum, w) => sum + w.amount);
   }
 
   Future<void> _fetchWaterIntakes() async {
@@ -640,6 +1209,45 @@ class _WaterScreenState extends State<WaterScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          if (_goalLoading)
+            const CircularProgressIndicator()
+          else
+            Row(
+              children: [
+                Text('Daily Goal: ', style: Theme.of(context).textTheme.bodyLarge),
+                if (_editingGoal)
+                  SizedBox(
+                    width: 80,
+                    child: TextFormField(
+                      initialValue: _goalInput,
+                      keyboardType: TextInputType.number,
+                      onChanged: (v) => _goalInput = v,
+                    ),
+                  )
+                else
+                  Text('$_waterGoal ml', style: Theme.of(context).textTheme.bodyLarge),
+                IconButton(
+                  icon: Icon(_editingGoal ? Icons.check : Icons.edit),
+                  onPressed: () {
+                    if (_editingGoal) {
+                      _updateWaterGoal();
+                    } else {
+                      setState(() { _editingGoal = true; });
+                    }
+                  },
+                ),
+              ],
+            ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: (_todayIntake / (_waterGoal > 0 ? _waterGoal : 1)).clamp(0.0, 1.0),
+            minHeight: 10,
+            backgroundColor: Colors.grey[300],
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+          ),
+          const SizedBox(height: 4),
+          Text('Today: $_todayIntake / $_waterGoal ml'),
           if (_showForm)
             Form(
               key: _formKey,
@@ -677,8 +1285,8 @@ class _WaterScreenState extends State<WaterScreen> {
                   final water = _waterIntakes[index];
                   return ListTile(
                     leading: const Icon(Icons.local_drink),
-                    title: Text('Amount: \\${water.amount} ml'),
-                    subtitle: Text('User ID: \\${water.userId}'),
+                    title: Text('Amount: ${water.amount} ml'),
+                    subtitle: Text('User ID: ${water.userId}'),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -723,10 +1331,53 @@ class _DietScreenState extends State<DietScreen> {
   String _food = '';
   String _calories = '';
 
+  int _caloriesGoal = 2000;
+  bool _goalLoading = false;
+  bool _editingGoal = false;
+  String _goalInput = '';
+
   @override
   void initState() {
     super.initState();
     _fetchDietEntries();
+    _fetchCaloriesGoal();
+  }
+
+  Future<void> _fetchCaloriesGoal() async {
+    setState(() { _goalLoading = true; });
+    final settings = await api.fetchSettings();
+    setState(() {
+      _caloriesGoal = settings?.caloriesGoal ?? 2000;
+      _goalInput = _caloriesGoal.toString();
+      _goalLoading = false;
+    });
+  }
+
+  Future<void> _updateCaloriesGoal() async {
+    setState(() { _goalLoading = true; });
+    final settings = await api.fetchSettings();
+    if (settings != null) {
+      final updated = await api.updateSettings(Settings(
+        userId: settings.userId,
+        notificationsEnabled: settings.notificationsEnabled,
+        theme: settings.theme,
+        waterGoal: settings.waterGoal,
+        caloriesGoal: int.tryParse(_goalInput) ?? _caloriesGoal,
+        stepsGoal: settings.stepsGoal, // add this line
+      ));
+      setState(() {
+        _editingGoal = false;
+        _caloriesGoal = updated?.caloriesGoal ?? _caloriesGoal;
+        _goalLoading = false;
+      });
+    } else {
+      setState(() { _goalLoading = false; });
+    }
+  }
+
+  int get _todayCalories {
+    final today = DateTime.now();
+    return _dietEntries.fold(0, (sum, d) => sum + d.calories);
   }
 
   Future<void> _fetchDietEntries() async {
@@ -823,6 +1474,45 @@ class _DietScreenState extends State<DietScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          if (_goalLoading)
+            const CircularProgressIndicator()
+          else
+            Row(
+              children: [
+                Text('Daily Calories Goal: ', style: Theme.of(context).textTheme.bodyLarge),
+                if (_editingGoal)
+                  SizedBox(
+                    width: 80,
+                    child: TextFormField(
+                      initialValue: _goalInput,
+                      keyboardType: TextInputType.number,
+                      onChanged: (v) => _goalInput = v,
+                    ),
+                  )
+                else
+                  Text('$_caloriesGoal kcal', style: Theme.of(context).textTheme.bodyLarge),
+                IconButton(
+                  icon: Icon(_editingGoal ? Icons.check : Icons.edit),
+                  onPressed: () {
+                    if (_editingGoal) {
+                      _updateCaloriesGoal();
+                    } else {
+                      setState(() { _editingGoal = true; });
+                    }
+                  },
+                ),
+              ],
+            ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: (_todayCalories / (_caloriesGoal > 0 ? _caloriesGoal : 1)).clamp(0.0, 1.0),
+            minHeight: 10,
+            backgroundColor: Colors.grey[300],
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
+          ),
+          const SizedBox(height: 4),
+          Text('Today: $_todayCalories / $_caloriesGoal kcal'),
           if (_showForm)
             Form(
               key: _formKey,
@@ -872,8 +1562,8 @@ class _DietScreenState extends State<DietScreen> {
                   final diet = _dietEntries[index];
                   return ListTile(
                     leading: const Icon(Icons.restaurant),
-                    title: Text('Meal: \\${diet.meal}'),
-                    subtitle: Text('Food: \\${diet.food}, Calories: \\${diet.calories}, User ID: \\${diet.userId}'),
+                    title: Text('Meal: ${diet.meal}'),
+                    subtitle: Text('Food: ${diet.food}, Calories: ${diet.calories}, User ID: ${diet.userId}'),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1055,8 +1745,8 @@ class _PeriodsScreenState extends State<PeriodsScreen> {
                   final period = _periods[index];
                   return ListTile(
                     leading: const Icon(Icons.calendar_today),
-                    title: Text('Start: \\${period.start}'),
-                    subtitle: Text('End: \\${period.end}, User ID: \\${period.userId}'),
+                    title: Text('Start: ${period.start}'),
+                    subtitle: Text('End: ${period.end}, User ID: ${period.userId}'),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1105,7 +1795,7 @@ class AwardsScreen extends StatelessWidget {
               return ListTile(
                 leading: const Icon(Icons.emoji_events),
                 title: Text(award.title),
-                subtitle: Text('Desc: \\${award.desc}, User ID: \\${award.userId}'),
+                subtitle: Text('Desc: ${award.desc}, User ID: ${award.userId}'),
               );
             },
           );
@@ -1140,7 +1830,7 @@ class JourneyScreen extends StatelessWidget {
               return ListTile(
                 leading: const Icon(Icons.book),
                 title: Text(journey.content),
-                subtitle: Text('Date: \\${journey.date}, User ID: \\${journey.userId}'),
+                subtitle: Text('Date: ${journey.date}, User ID: ${journey.userId}'),
               );
             },
           );
@@ -1319,8 +2009,8 @@ class _HealthRecordsScreenState extends State<HealthRecordsScreen> {
                   final record = _healthRecords[index];
                   return ListTile(
                     leading: const Icon(Icons.health_and_safety),
-                    title: Text('Type: \\${record.type}'),
-                    subtitle: Text('Value: \\${record.value}, Date: \\${record.date}, User ID: \\${record.userId}'),
+                    title: Text('Type: ${record.type}'),
+                    subtitle: Text('Value: ${record.value}, Date: ${record.date}, User ID: ${record.userId}'),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1356,6 +2046,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _formKey = GlobalKey<FormState>();
   String? _name;
   String? _email;
+  double? _weight;
+  int? _age;
+  String? _sex;
+  double? _height;
   String? _error;
   bool _loading = false;
   bool _editing = false;
@@ -1374,6 +2068,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (user != null) {
         _name = user.name;
         _email = user.email;
+        _weight = user.weight;
+        _age = user.age;
+        _sex = user.sex;
+        _height = user.height;
       } else {
         _error = 'Failed to load profile';
       }
@@ -1383,7 +2081,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _saveProfile() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() { _loading = true; _error = null; });
-    final user = await api.updateMe(_name!, _email!);
+    final user = await api.updateMe(_name!, _email!, _weight ?? 70, _age ?? 18, _sex ?? 'other', _height ?? 170);
     setState(() { _loading = false; });
     if (user != null) {
       setState(() { _editing = false; });
@@ -1400,8 +2098,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       padding: const EdgeInsets.all(16.0),
       child: Form(
         key: _formKey,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+        child: ListView(
           children: [
             Text('Profile', style: Theme.of(context).textTheme.headlineMedium),
             const SizedBox(height: 24),
@@ -1419,30 +2116,48 @@ class _ProfileScreenState extends State<ProfileScreen> {
               onChanged: (v) => _email = v,
               validator: (v) => v == null || v.isEmpty ? 'Enter email' : null,
             ),
+            TextFormField(
+              initialValue: _weight?.toString() ?? '',
+              decoration: const InputDecoration(labelText: 'Weight (kg)'),
+              keyboardType: TextInputType.number,
+              onChanged: (v) => _weight = double.tryParse(v),
+            ),
+            TextFormField(
+              initialValue: _age?.toString() ?? '',
+              decoration: const InputDecoration(labelText: 'Age'),
+              keyboardType: TextInputType.number,
+              onChanged: (v) => _age = int.tryParse(v),
+            ),
+            DropdownButtonFormField<String>(
+              value: _sex,
+              items: const [
+                DropdownMenuItem(value: 'male', child: Text('Male')),
+                DropdownMenuItem(value: 'female', child: Text('Female')),
+                DropdownMenuItem(value: 'other', child: Text('Other')),
+              ],
+              onChanged: (v) => setState(() => _sex = v),
+              decoration: const InputDecoration(labelText: 'Sex'),
+            ),
+            TextFormField(
+              initialValue: _height?.toString() ?? '',
+              decoration: const InputDecoration(labelText: 'Height (cm)'),
+              keyboardType: TextInputType.number,
+              onChanged: (v) => _height = double.tryParse(v),
+            ),
             if (_error != null) ...[
               const SizedBox(height: 8),
               Text(_error!, style: const TextStyle(color: Colors.red)),
             ],
             const SizedBox(height: 16),
             _editing
-                ? Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ElevatedButton(
-                        onPressed: _saveProfile,
-                        child: const Text('Save'),
-                      ),
-                      const SizedBox(width: 16),
-                      OutlinedButton(
-                        onPressed: () => setState(() { _editing = false; }),
-                        child: const Text('Cancel'),
-                      ),
-                    ],
+                ? ElevatedButton(
+                    onPressed: _saveProfile,
+                    child: const Text('Save'),
                   )
                 : ElevatedButton(
-                    onPressed: () => setState(() { _editing = true; }),
+                    onPressed: () => setState(() => _editing = true),
                     child: const Text('Edit'),
-            ),
+                  ),
           ],
         ),
       ),
@@ -1488,13 +2203,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveSettings() async {
     setState(() { _loading = true; _error = null; });
     final settings = Settings(
+      userId: 0, // Placeholder, replace with actual user ID
       notificationsEnabled: _notificationsEnabled ?? true,
       theme: _theme ?? 'light',
+      waterGoal: 2000, // Placeholder, replace with actual water goal
+      caloriesGoal: 2000, // Placeholder, replace with actual calories goal
+      stepsGoal: 10000, // add this line
     );
     final updated = await api.updateSettings(settings);
     setState(() { _loading = false; });
     if (updated != null) {
       setState(() { _editing = false; });
+      MyApp.of(context)?.updateTheme(updated.theme); // Notify MyApp
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings updated')));
     } else {
       setState(() { _error = 'Failed to update settings'; });
@@ -1722,8 +2442,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
                   final reminder = _reminders[index];
                   return ListTile(
                     leading: const Icon(Icons.alarm),
-                    title: Text('Time: \\${reminder.time}'),
-                    subtitle: Text('Message: \\${reminder.message}, Type: \\${reminder.type}'),
+                    title: Text('Time: ${reminder.time}'),
+                    subtitle: Text('Message: ${reminder.message}, Type: ${reminder.type}'),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1741,6 +2461,381 @@ class _RemindersScreenState extends State<RemindersScreen> {
                 },
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class StepsScreen extends StatefulWidget {
+  StepsScreen({super.key});
+
+  @override
+  State<StepsScreen> createState() => _StepsScreenState();
+}
+
+class _StepsScreenState extends State<StepsScreen> {
+  final ApiService api = ApiService();
+  int _todaySteps = 0;
+  int _stepsGoal = 10000;
+  bool _goalLoading = false;
+  bool _editingGoal = false;
+  String _goalInput = '';
+  late MockStepsProvider _mockProvider;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchStepsGoal();
+    _startMockProvider();
+  }
+
+  Future<void> _fetchStepsGoal() async {
+    setState(() { _goalLoading = true; });
+    final settings = await api.fetchSettings();
+    setState(() {
+      _stepsGoal = settings?.stepsGoal ?? 10000;
+      _goalInput = _stepsGoal.toString();
+      _goalLoading = false;
+    });
+  }
+
+  Future<void> _updateStepsGoal() async {
+    setState(() { _goalLoading = true; });
+    final settings = await api.fetchSettings();
+    if (settings != null) {
+      final updated = await api.updateSettings(settings.copyWith(stepsGoal: int.tryParse(_goalInput) ?? _stepsGoal));
+      if (updated != null) {
+        final refreshed = await api.fetchSettings();
+        setState(() {
+          _stepsGoal = refreshed?.stepsGoal ?? updated.stepsGoal;
+          _editingGoal = false;
+        });
+      }
+    }
+    setState(() { _goalLoading = false; });
+  }
+
+  void _startMockProvider() {
+    if (_started) return;
+    _mockProvider = MockStepsProvider(onStep: (steps) {
+      setState(() { _todaySteps = steps; });
+    });
+    _mockProvider.start();
+    _started = true;
+  }
+
+  @override
+  void dispose() {
+    _mockProvider.stop();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Steps', style: Theme.of(context).textTheme.headlineMedium),
+              _goalLoading
+                  ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                  : IconButton(
+                      icon: Icon(_editingGoal ? Icons.check : Icons.edit),
+                      onPressed: () {
+                        if (_editingGoal) {
+                          _updateStepsGoal();
+                        } else {
+                          setState(() { _editingGoal = true; });
+                        }
+                      },
+                    ),
+            ],
+          ),
+          if (_editingGoal)
+            TextField(
+              decoration: const InputDecoration(labelText: 'Daily Steps Goal'),
+              keyboardType: TextInputType.number,
+              onChanged: (v) => _goalInput = v,
+              controller: TextEditingController(text: _goalInput),
+            ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: (_todaySteps / (_stepsGoal > 0 ? _stepsGoal : 1)).clamp(0.0, 1.0),
+            minHeight: 10,
+            backgroundColor: Colors.grey[300],
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+          ),
+          const SizedBox(height: 4),
+          Text('Today: $_todaySteps / $_stepsGoal steps'),
+        ],
+      ),
+    );
+  }
+}
+
+class FeedScreen extends StatefulWidget {
+  FeedScreen({super.key});
+
+  @override
+  State<FeedScreen> createState() => _FeedScreenState();
+}
+
+class _FeedScreenState extends State<FeedScreen> {
+  final ApiService api = ApiService();
+  List<dynamic> _activities = [];
+  bool _loading = false;
+  String? _error;
+  String _typeFilter = '';
+  DateTime? _startDate;
+  DateTime? _endDate;
+
+  final List<String> _typeOptions = [
+    '', 'workout', 'diet', // Only show workout and diet
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchFeed();
+  }
+
+  Future<void> _fetchFeed() async {
+    setState(() { _loading = true; });
+    try {
+      final activities = await api.getFriendsFeed();
+      setState(() { _activities = activities; _loading = false; });
+    } catch (e) {
+      setState(() { _error = 'Failed to load feed'; _loading = false; });
+    }
+  }
+
+  List<dynamic> get _filteredActivities {
+    return _activities.where((a) {
+      if (a['type'] != 'workout' && a['type'] != 'diet') return false;
+      if (_typeFilter.isNotEmpty && a['type'] != _typeFilter) return false;
+      if (_startDate != null) {
+        final created = DateTime.tryParse(a['created_at'] ?? '') ?? DateTime(2000);
+        if (created.isBefore(_startDate!)) return false;
+      }
+      if (_endDate != null) {
+        final created = DateTime.tryParse(a['created_at'] ?? '') ?? DateTime(2100);
+        if (created.isAfter(_endDate!)) return false;
+      }
+      return true;
+    }).toList();
+  }
+
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) setState(() { _startDate = picked; });
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) setState(() { _endDate = picked; });
+  }
+
+  Widget _buildActivityTile(dynamic a) {
+    final type = a['type'];
+    Map<String, dynamic> data = {};
+    try {
+      data = a['data'] is String ? Map<String, dynamic>.from(jsonDecode(a['data'])) : Map<String, dynamic>.from(a['data'] ?? {});
+    } catch (_) {}
+    final friendName = a['user_name'] ?? a['username'] ?? a['name'] ?? 'Someone';
+    if (type == 'workout') {
+      return Card(
+        child: ListTile(
+          leading: const Icon(Icons.fitness_center),
+          title: Text('$friendName did a workout'),
+          subtitle: Text(
+            'Type: \\${data['type'] ?? ''}\nDuration: \\${data['duration'] ?? ''} min\nIntensity: \\${data['intensity'] ?? ''}\nCalories: \\${data['calories'] ?? ''}\nLocation: \\${data['location'] ?? ''}\nAt: \\${a['created_at'] ?? ''}',
+          ),
+        ),
+      );
+    } else if (type == 'diet') {
+      return Card(
+        child: ListTile(
+          leading: const Icon(Icons.restaurant),
+          title: Text('$friendName logged a meal'),
+          subtitle: Text(
+            'Meal: \\${data['meal'] ?? ''}\nFood: \\${data['food'] ?? ''}\nCalories: \\${data['calories'] ?? ''}\nAt: \\${a['created_at'] ?? ''}',
+          ),
+        ),
+      );
+    } else {
+      return const SizedBox.shrink();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Friends Feed', style: Theme.of(context).textTheme.headlineMedium),
+              IconButton(icon: const Icon(Icons.refresh), onPressed: _fetchFeed),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _typeFilter,
+                  items: _typeOptions.map((type) => DropdownMenuItem(
+                    value: type,
+                    child: Text(type.isEmpty ? 'All Types' : type),
+                  )).toList(),
+                  onChanged: (v) => setState(() { _typeFilter = v ?? ''; }),
+                  decoration: const InputDecoration(labelText: 'Type'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                onPressed: _pickStartDate,
+                child: Text(_startDate != null ? 'From: ' + DateFormat('yyyy-MM-dd').format(_startDate!) : 'From'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                onPressed: _pickEndDate,
+                child: Text(_endDate != null ? 'To: ' + DateFormat('yyyy-MM-dd').format(_endDate!) : 'To'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (_loading) const CircularProgressIndicator(),
+          if (_error != null) Text(_error!, style: const TextStyle(color: Colors.red)),
+          if (_filteredActivities.isEmpty && !_loading)
+            const Text('No activities found.'),
+          if (_filteredActivities.isNotEmpty)
+            Expanded(
+              child: ListView.builder(
+                itemCount: _filteredActivities.length,
+                itemBuilder: (context, index) {
+                  final a = _filteredActivities[index];
+                  return _buildActivityTile(a);
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class ChatScreen extends StatefulWidget {
+  final User friend;
+  ChatScreen({required this.friend});
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> {
+  final ApiService api = ApiService();
+  List<dynamic> _messages = [];
+  bool _loading = false;
+  String? _error;
+  final TextEditingController _controller = TextEditingController();
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchMessages();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _fetchMessages());
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _fetchMessages() async {
+    setState(() { _loading = true; });
+    try {
+      final messages = await api.getChatHistory(widget.friend.id);
+      setState(() { _messages = messages; _loading = false; });
+    } catch (e) {
+      setState(() { _error = 'Failed to load messages'; _loading = false; });
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    await api.sendChatMessage(widget.friend.id, text);
+    _controller.clear();
+    _fetchMessages();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.friend.name)),
+      body: Column(
+        children: [
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : ListView.builder(
+                    reverse: true,
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) {
+                      final m = _messages[_messages.length - 1 - index];
+                      final isMe = m['from_user_id'] == api.currentUserId;
+                      return Align(
+                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(vertical: 2, horizontal: 8),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: isMe ? Colors.blue : Colors.grey[300],
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            m['content'],
+                            style: TextStyle(color: isMe ? Colors.white : Colors.black),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  decoration: const InputDecoration(hintText: 'Type a message...'),
+                  onSubmitted: (_) => _sendMessage(),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.send),
+                onPressed: _sendMessage,
+              ),
+            ],
+          ),
         ],
       ),
     );

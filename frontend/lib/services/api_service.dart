@@ -1,24 +1,62 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../friend.dart';
 
 class Settings {
+  final int userId;
   final bool notificationsEnabled;
   final String theme;
+  final int waterGoal;
+  final int caloriesGoal;
+  final int stepsGoal;
 
-  Settings({required this.notificationsEnabled, required this.theme});
+  Settings({
+    required this.userId,
+    required this.notificationsEnabled,
+    required this.theme,
+    required this.waterGoal,
+    required this.caloriesGoal,
+    required this.stepsGoal,
+  });
 
   factory Settings.fromJson(Map<String, dynamic> json) {
     return Settings(
+      userId: json['user_id'],
       notificationsEnabled: json['notificationsEnabled'] ?? true,
       theme: json['theme'] ?? 'light',
+      waterGoal: json['water_goal'] ?? 2000,
+      caloriesGoal: json['calories_goal'] ?? 2000,
+      stepsGoal: json['steps_goal'] ?? 10000,
     );
   }
 
   Map<String, dynamic> toJson() => {
+    'user_id': userId,
     'notificationsEnabled': notificationsEnabled,
     'theme': theme,
+    'water_goal': waterGoal,
+    'calories_goal': caloriesGoal,
+    'steps_goal': stepsGoal,
   };
+
+  Settings copyWith({
+    int? userId,
+    bool? notificationsEnabled,
+    String? theme,
+    int? waterGoal,
+    int? caloriesGoal,
+    int? stepsGoal,
+  }) {
+    return Settings(
+      userId: userId ?? this.userId,
+      notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
+      theme: theme ?? this.theme,
+      waterGoal: waterGoal ?? this.waterGoal,
+      caloriesGoal: caloriesGoal ?? this.caloriesGoal,
+      stepsGoal: stepsGoal ?? this.stepsGoal,
+    );
+  }
 }
 
 class Reminder {
@@ -46,7 +84,12 @@ class Reminder {
 }
 
 class ApiService {
+  static final ApiService _instance = ApiService._internal();
+  factory ApiService() => _instance;
+  ApiService._internal();
+
   static const String baseUrl = 'http://localhost:8080';
+  int? currentUserId;
 
   Future<bool> register(String name, String email, String password) async {
     final response = await http.post(
@@ -68,15 +111,19 @@ class ApiService {
       final token = data['token'];
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('jwt', token);
+      print('Token saved: $token'); // Debug print
       return token;
     } else {
+      print('Login failed with status: ${response.statusCode}'); // Debug print
       return null;
     }
   }
 
   Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('jwt');
+    final token = prefs.getString('jwt');
+    print('Token retrieved: $token'); // Debug print
+    return token;
   }
 
   Future<List<User>> fetchUsers() async {
@@ -265,7 +312,7 @@ class ApiService {
     }
   }
 
-  Future<User?> updateMe(String name, String email) async {
+  Future<User?> updateMe(String name, String email, double weight, int age, String sex, double height) async {
     final token = await getToken();
     final response = await http.put(
       Uri.parse('$baseUrl/me'),
@@ -273,21 +320,30 @@ class ApiService {
         'Content-Type': 'application/json',
         if (token != null) 'Authorization': 'Bearer $token',
       },
-      body: json.encode({'name': name, 'email': email}),
+      body: json.encode({
+        'name': name,
+        'email': email,
+        'weight': weight,
+        'age': age,
+        'sex': sex,
+        'height': height,
+      }),
     );
     if (response.statusCode == 200) {
       return User.fromJson(json.decode(response.body));
-    } else {
-      return null;
     }
+    return null;
   }
 
   Future<Settings?> getSettings() async {
     final token = await getToken();
+    print('Getting settings with token: $token'); // Debug print
     final response = await http.get(
       Uri.parse('$baseUrl/settings'),
       headers: token != null ? {'Authorization': 'Bearer $token'} : {},
     );
+    print('Settings response status: ${response.statusCode}'); // Debug print
+    print('Settings response body: ${response.body}'); // Debug print
     if (response.statusCode == 200) {
       return Settings.fromJson(json.decode(response.body));
     } else {
@@ -323,10 +379,25 @@ class ApiService {
       body: json.encode({
         'type': workout.type,
         'duration': workout.duration,
+        'intensity': workout.intensity,
+        'calories': workout.calories,
+        'location': workout.location,
       }),
     );
     if (response.statusCode == 201) {
-      return Workout.fromJson(json.decode(response.body));
+      final created = Workout.fromJson(json.decode(response.body));
+      await postActivity(
+        type: 'workout',
+        data: {
+          'type': created.type,
+          'duration': created.duration,
+          'intensity': created.intensity,
+          'calories': created.calories,
+          'location': created.location,
+        },
+        isPublic: true,
+      );
+      return created;
     } else {
       return null;
     }
@@ -343,6 +414,9 @@ class ApiService {
       body: json.encode({
         'type': workout.type,
         'duration': workout.duration,
+        'intensity': workout.intensity,
+        'calories': workout.calories,
+        'location': workout.location,
       }),
     );
     if (response.statusCode == 200) {
@@ -423,7 +497,17 @@ class ApiService {
       }),
     );
     if (response.statusCode == 201) {
-      return DietEntry.fromJson(json.decode(response.body));
+      final created = DietEntry.fromJson(json.decode(response.body));
+      await postActivity(
+        type: 'diet',
+        data: {
+          'meal': created.meal,
+          'food': created.food,
+          'calories': created.calories,
+        },
+        isPublic: true,
+      );
+      return created;
     } else {
       return null;
     }
@@ -558,20 +642,311 @@ class ApiService {
     );
     return response.statusCode == 200;
   }
+
+  Future<List<User>> searchUsers(String query) async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('${ApiService.baseUrl}/users/search?q=$query'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => User.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to search users');
+    }
+  }
+
+  Future<void> sendFriendRequest(int toUserId) async {
+    final token = await getToken();
+    print('Sending friend request with token: $token'); // Debug print
+    print('Request body: ${json.encode({'to_user_id': toUserId})}'); // Debug print
+    final response = await http.post(
+      Uri.parse('${ApiService.baseUrl}/friends/request'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: json.encode({'to_user_id': toUserId}),
+    );
+    print('Response status: ${response.statusCode}'); // Debug print
+    print('Response body: ${response.body}'); // Debug print
+    if (response.statusCode != 201) {
+      throw Exception('Failed to send friend request');
+    }
+  }
+
+  Future<Map<String, dynamic>> getFriendRequests() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('${ApiService.baseUrl}/friends/requests'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      throw Exception('Failed to get friend requests');
+    }
+  }
+
+  Future<void> acceptFriendRequest(int requestId) async {
+    final token = await getToken();
+    final response = await http.post(
+      Uri.parse('${ApiService.baseUrl}/friends/accept'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: json.encode({'request_id': requestId}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to accept friend request');
+    }
+  }
+
+  Future<void> rejectFriendRequest(int requestId) async {
+    final token = await getToken();
+    final response = await http.post(
+      Uri.parse('${ApiService.baseUrl}/friends/reject'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: json.encode({'request_id': requestId}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to reject friend request');
+    }
+  }
+
+  Future<List<User>> getFriendsList() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('${ApiService.baseUrl}/friends/list'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => User.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to get friends list');
+    }
+  }
+
+  Future<List<dynamic>> getFriendsFeed() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('${ApiService.baseUrl}/feed/friends'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      throw Exception('Failed to get friends feed');
+    }
+  }
+
+  Future<List<Message>> getChatHistory(int friendId) async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('$baseUrl/chat/$friendId'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => Message.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to get chat history');
+    }
+  }
+
+  Future<void> sendChatMessage(int friendId, String content) async {
+    final token = await getToken();
+    final response = await http.post(
+      Uri.parse('$baseUrl/chat/$friendId'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: json.encode({'content': content}),
+    );
+    if (response.statusCode != 201) {
+      throw Exception('Failed to send message');
+    }
+  }
+
+  Future<List<Friend>> fetchFriends() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('$baseUrl/friends'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      return Friend.listFromJson(response.body);
+    } else {
+      throw Exception('Failed to load friends');
+    }
+  }
+
+  Future<void> postActivity({required String type, required Map<String, dynamic> data, bool isPublic = true}) async {
+    final token = await getToken();
+    await http.post(
+      Uri.parse('$baseUrl/activity'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: json.encode({
+        'type': type,
+        'data': json.encode(data),
+        'is_public': isPublic,
+      }),
+    );
+  }
+
+  Future<Map<String, dynamic>> fetchWeeklySummary() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('$baseUrl/summary/weekly'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      throw Exception('Failed to fetch weekly summary');
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchMonthlySummary() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('$baseUrl/summary/monthly'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      throw Exception('Failed to fetch monthly summary');
+    }
+  }
+}
+
+extension ApiServiceSettings on ApiService {
+  Future<Settings?> fetchSettings() async {
+    final token = await getToken();
+    print('Getting settings with token: $token'); // Debug print
+    final response = await http.get(
+      Uri.parse('${ApiService.baseUrl}/settings'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    print('Settings response status: ${response.statusCode}'); // Debug print
+    print('Settings response body: ${response.body}'); // Debug print
+    if (response.statusCode == 200) {
+      return Settings.fromJson(json.decode(response.body));
+    } else {
+      return null;
+    }
+  }
+
+  Future<Settings?> updateSettings(Settings settings) async {
+    final token = await getToken();
+    final response = await http.put(
+      Uri.parse('${ApiService.baseUrl}/settings'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: json.encode({
+        'notificationsEnabled': settings.notificationsEnabled,
+        'theme': settings.theme,
+        'water_goal': settings.waterGoal,
+        'calories_goal': settings.caloriesGoal,
+        'steps_goal': settings.stepsGoal, // add this line
+      }),
+    );
+    if (response.statusCode == 200) {
+      return Settings.fromJson(json.decode(response.body));
+    } else {
+      return null;
+    }
+  }
+}
+
+extension ApiServiceWorkouts on ApiService {
+  Future<List<Workout>> fetchWorkoutsWithParams(Map<String, String> params) async {
+    final token = await getToken();
+    final uri = Uri.parse('${ApiService.baseUrl}/workouts').replace(queryParameters: params);
+    final response = await http.get(
+      uri,
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => Workout.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to load workouts');
+    }
+  }
 }
 
 class User {
   final int id;
   final String name;
   final String email;
+  final double weight;
+  final int age;
+  final String sex;
+  final double height;
 
-  User({required this.id, required this.name, required this.email});
+  User({
+    required this.id,
+    required this.name,
+    required this.email,
+    required this.weight,
+    required this.age,
+    required this.sex,
+    required this.height,
+  });
 
   factory User.fromJson(Map<String, dynamic> json) {
     return User(
       id: json['id'],
       name: json['name'],
       email: json['email'],
+      weight: (json['weight'] ?? 70).toDouble(),
+      age: json['age'] ?? 18,
+      sex: json['sex'] ?? 'other',
+      height: (json['height'] ?? 170).toDouble(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'email': email,
+    'weight': weight,
+    'age': age,
+    'sex': sex,
+    'height': height,
+  };
+
+  User copyWith({
+    int? id,
+    String? name,
+    String? email,
+    double? weight,
+    int? age,
+    String? sex,
+    double? height,
+  }) {
+    return User(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      email: email ?? this.email,
+      weight: weight ?? this.weight,
+      age: age ?? this.age,
+      sex: sex ?? this.sex,
+      height: height ?? this.height,
     );
   }
 }
@@ -581,8 +956,23 @@ class Workout {
   final int userId;
   final String type;
   final int duration;
+  final String intensity;
+  final int calories;
+  final String location;
+  final String category;
+  final DateTime? createdAt;
 
-  Workout({required this.id, required this.userId, required this.type, required this.duration});
+  Workout({
+    required this.id,
+    required this.userId,
+    required this.type,
+    required this.duration,
+    required this.intensity,
+    required this.calories,
+    required this.location,
+    required this.category,
+    this.createdAt,
+  });
 
   factory Workout.fromJson(Map<String, dynamic> json) {
     return Workout(
@@ -590,6 +980,11 @@ class Workout {
       userId: json['user_id'],
       type: json['type'],
       duration: json['duration'],
+      intensity: json['intensity'] ?? '',
+      calories: json['calories'] ?? 0,
+      location: json['location'] ?? '',
+      category: json['category'] ?? '',
+      createdAt: json['created_at'] != null ? DateTime.parse(json['created_at']) : null,
     );
   }
 }
@@ -700,6 +1095,32 @@ class HealthRecord {
       type: json['type'],
       value: json['value'],
       date: json['date'],
+    );
+  }
+}
+
+class Message {
+  final int id;
+  final int senderId;
+  final int recipientId;
+  final String content;
+  final DateTime timestamp;
+
+  Message({
+    required this.id,
+    required this.senderId,
+    required this.recipientId,
+    required this.content,
+    required this.timestamp,
+  });
+
+  factory Message.fromJson(Map<String, dynamic> json) {
+    return Message(
+      id: json['id'],
+      senderId: json['sender_id'],
+      recipientId: json['recipient_id'],
+      content: json['content'],
+      timestamp: DateTime.parse(json['timestamp']),
     );
   }
 }

@@ -17,16 +17,26 @@ import (
 )
 
 type User struct {
-	ID    int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	Name  string `json:"name" gorm:"not null"`
-	Email string `json:"email" gorm:"unique;not null"`
+	ID     int     `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name   string  `json:"name" gorm:"not null"`
+	Email  string  `json:"email" gorm:"unique;not null"`
+	Password string `json:"-" gorm:"not null"` // добавлено поле для хранения хеша пароля
+	Weight float64 `json:"weight" gorm:"default:70"`
+	Age    int     `json:"age" gorm:"default:18"`
+	Sex    string  `json:"sex" gorm:"default:'other'"`
+	Height float64 `json:"height" gorm:"default:170"`
 }
 
 type Workout struct {
-	ID       int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserID   int    `json:"user_id" gorm:"index;not null"`
-	Type     string `json:"type" gorm:"not null"`
-	Duration int    `json:"duration"`
+	ID        int       `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserID    int       `json:"user_id" gorm:"index;not null"`
+	Type      string    `json:"type" gorm:"not null"`
+	Duration  int       `json:"duration"`
+	Intensity string    `json:"intensity"`
+	Calories  int       `json:"calories"`
+	Location  string    `json:"location"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	Category  string    `json:"category"`
 }
 
 type WaterIntake struct {
@@ -73,9 +83,12 @@ type HealthRecord struct {
 }
 
 type Settings struct {
-	UserID              int    `json:"user_id" gorm:"primaryKey"`
-	NotificationsEnabled bool   `json:"notificationsEnabled"`
-	Theme               string `json:"theme"`
+	UserID                int    `json:"user_id" gorm:"primaryKey"`
+	NotificationsEnabled  bool   `json:"notificationsEnabled"`
+	Theme                 string `json:"theme"`
+	WaterGoal             int    `json:"water_goal" gorm:"default:2000"`
+	CaloriesGoal          int    `json:"calories_goal" gorm:"default:2000"`
+	StepsGoal             int    `json:"steps_goal" gorm:"default:10000"`
 }
 
 type Reminder struct {
@@ -86,7 +99,47 @@ type Reminder struct {
 	Type    string `json:"type"`
 }
 
-var userPasswords = map[int]string{}
+type FriendRequest struct {
+	ID         int       `json:"id" gorm:"primaryKey;autoIncrement"`
+	FromUserID int       `json:"from_user_id" gorm:"index;not null"`
+	ToUserID   int       `json:"to_user_id" gorm:"index;not null"`
+	Status     string    `json:"status" gorm:"type:varchar(16);not null"` // pending, accepted, rejected
+	CreatedAt  time.Time `json:"created_at" gorm:"autoCreateTime"`
+}
+
+type Friendship struct {
+	ID        int       `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserID1   int       `json:"user_id_1" gorm:"index;not null"`
+	UserID2   int       `json:"user_id_2" gorm:"index;not null"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+}
+
+type Activity struct {
+	ID        int       `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserID    int       `json:"user_id" gorm:"index;not null"`
+	Type      string    `json:"type" gorm:"not null"` // workout, achievement, etc.
+	Data      string    `json:"data" gorm:"type:jsonb"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	IsPublic  bool      `json:"is_public" gorm:"default:true"`
+}
+
+type Message struct {
+	ID          int       `json:"id" gorm:"primaryKey;autoIncrement"`
+	SenderID    int       `json:"sender_id" gorm:"column:from_user_id;index;not null"`
+	RecipientID int       `json:"recipient_id" gorm:"column:to_user_id;index;not null"`
+	Content     string    `json:"content" gorm:"type:text;not null"`
+	Timestamp   time.Time `json:"timestamp" gorm:"column:created_at;autoCreateTime"`
+	Read        bool      `json:"read" gorm:"default:false"`
+}
+
+type Badge struct {
+	ID        int       `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserID    int       `json:"user_id" gorm:"index;not null"`
+	Code      string    `json:"code" gorm:"not null"` // e.g., "steps_10k", "streak_7d", "workouts_5w"
+	Title     string    `json:"title"`
+	Desc      string    `json:"desc"`
+	EarnedAt  time.Time `json:"earned_at" gorm:"autoCreateTime"`
+}
 
 var triggeredReminders = struct {
 	m map[int]bool
@@ -120,6 +173,11 @@ func initDB() {
 		&HealthRecord{},
 		&Settings{},
 		&Reminder{},
+		&FriendRequest{},
+		&Friendship{},
+		&Activity{},
+		&Message{},
+		&Badge{},
 	)
 	if err != nil {
 		log.Fatalf("failed to auto-migrate models: %v", err)
@@ -151,7 +209,6 @@ func startReminderChecker() {
 	}()
 }
 
-// --- User CRUD ---
 func getUsers(c *gin.Context) {
 	var users []User
 	if err := db.Find(&users).Error; err != nil {
@@ -181,6 +238,18 @@ func createUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if newUser.Weight == 0 {
+		newUser.Weight = 70
+	}
+	if newUser.Age == 0 {
+		newUser.Age = 18
+	}
+	if newUser.Sex == "" {
+		newUser.Sex = "other"
+	}
+	if newUser.Height == 0 {
+		newUser.Height = 170
+	}
 	if err := db.Create(&newUser).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -203,6 +272,18 @@ func updateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if user.Weight == 0 {
+		user.Weight = 70
+	}
+	if user.Age == 0 {
+		user.Age = 18
+	}
+	if user.Sex == "" {
+		user.Sex = "other"
+	}
+	if user.Height == 0 {
+		user.Height = 170
+	}
 	if err := db.Save(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -223,11 +304,31 @@ func deleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "User deleted"})
 }
 
-// --- Workout CRUD ---
 func getWorkouts(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var workouts []Workout
-	if err := db.Where("user_id = ?", userID).Find(&workouts).Error; err != nil {
+
+	start := c.Query("start")
+	end := c.Query("end")
+	category := c.Query("category")
+	typeParam := c.Query("type")
+
+	dbQuery := db.Where("user_id = ?", userID)
+
+	if start != "" {
+		dbQuery = dbQuery.Where("created_at >= ?", start)
+	}
+	if end != "" {
+		dbQuery = dbQuery.Where("created_at <= ?", end)
+	}
+	if category != "" {
+		dbQuery = dbQuery.Where("category = ?", category)
+	}
+	if typeParam != "" {
+		dbQuery = dbQuery.Where("type = ?", typeParam)
+	}
+
+	if err := dbQuery.Find(&workouts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -255,10 +356,17 @@ func createWorkout(c *gin.Context) {
 		return
 	}
 	newWorkout.UserID = userID
+	if newWorkout.Intensity == "" {
+		newWorkout.Intensity = "medium"
+	}
+	if newWorkout.Location == "" {
+		newWorkout.Location = "unspecified"
+	}
 	if err := db.Create(&newWorkout).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	checkAndAwardBadges(userID) // Award badges after successful workout
 	c.JSON(http.StatusCreated, newWorkout)
 }
 func updateWorkout(c *gin.Context) {
@@ -278,6 +386,12 @@ func updateWorkout(c *gin.Context) {
 		return
 	}
 	workout.UserID = userID
+	if workout.Intensity == "" {
+		workout.Intensity = "medium"
+	}
+	if workout.Location == "" {
+		workout.Location = "unspecified"
+	}
 	if err := db.Save(&workout).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -298,7 +412,6 @@ func deleteWorkout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Workout deleted"})
 }
 
-// --- WaterIntake CRUD ---
 func getWaterIntakes(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var waterIntakes []WaterIntake
@@ -373,7 +486,6 @@ func deleteWaterIntake(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Water intake deleted"})
 }
 
-// --- DietEntry CRUD ---
 func getDietEntries(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var dietEntries []DietEntry
@@ -448,7 +560,6 @@ func deleteDietEntry(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Diet entry deleted"})
 }
 
-// --- Period CRUD ---
 func getPeriods(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var periods []Period
@@ -523,7 +634,6 @@ func deletePeriod(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Period deleted"})
 }
 
-// --- Award CRUD ---
 func getAwards(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var awards []Award
@@ -598,7 +708,6 @@ func deleteAward(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Award deleted"})
 }
 
-// --- Journey CRUD ---
 func getJourneys(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var journeys []Journey
@@ -673,7 +782,6 @@ func deleteJourney(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Journey deleted"})
 }
 
-// --- HealthRecord CRUD ---
 func getHealthRecords(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var healthRecords []HealthRecord
@@ -709,6 +817,7 @@ func createHealthRecord(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	checkAndAwardBadges(userID) // Award badges after successful health record
 	c.JSON(http.StatusCreated, newHealth)
 }
 func updateHealthRecord(c *gin.Context) {
@@ -748,7 +857,6 @@ func deleteHealthRecord(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Health record deleted"})
 }
 
-// --- Reminder CRUD ---
 func getReminders(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var reminders []Reminder
@@ -788,7 +896,112 @@ func deleteReminder(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Reminder deleted"})
 }
 
-// Registration endpoint
+func sendFriendRequest(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var req struct {
+		ToUserID int `json:"to_user_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.ToUserID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid to_user_id"})
+		return
+	}
+	if req.ToUserID == userID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot send request to yourself"})
+		return
+	}
+	var existingFriend Friendship
+	if err := db.Where("(user_id1 = ? AND user_id2 = ?) OR (user_id1 = ? AND user_id2 = ?)", userID, req.ToUserID, req.ToUserID, userID).First(&existingFriend).Error; err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Already friends"})
+		return
+	}
+	var existingReq FriendRequest
+	if err := db.Where("from_user_id = ? AND to_user_id = ? AND status = ?", userID, req.ToUserID, "pending").First(&existingReq).Error; err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Request already sent"})
+		return
+	}
+	fr := FriendRequest{FromUserID: userID, ToUserID: req.ToUserID, Status: "pending"}
+	if err := db.Create(&fr).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, fr)
+}
+
+func getFriendRequests(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var incoming, outgoing []FriendRequest
+	if err := db.Where("to_user_id = ? AND status = ?", userID, "pending").Find(&incoming).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := db.Where("from_user_id = ? AND status = ?", userID, "pending").Find(&outgoing).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"incoming": incoming, "outgoing": outgoing})
+}
+
+func acceptFriendRequest(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var req struct{ RequestID int `json:"request_id"` }
+	if err := c.ShouldBindJSON(&req); err != nil || req.RequestID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request_id"})
+		return
+	}
+	var fr FriendRequest
+	if err := db.First(&fr, req.RequestID).Error; err != nil || fr.ToUserID != userID || fr.Status != "pending" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Request not found or not allowed"})
+		return
+	}
+	fr.Status = "accepted"
+	db.Save(&fr)
+	f := Friendship{UserID1: fr.FromUserID, UserID2: fr.ToUserID}
+	db.Create(&f)
+	c.JSON(http.StatusOK, gin.H{"message": "Friend request accepted"})
+}
+
+func rejectFriendRequest(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var req struct{ RequestID int `json:"request_id"` }
+	if err := c.ShouldBindJSON(&req); err != nil || req.RequestID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request_id"})
+		return
+	}
+	var fr FriendRequest
+	if err := db.First(&fr, req.RequestID).Error; err != nil || fr.ToUserID != userID || fr.Status != "pending" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Request not found or not allowed"})
+		return
+	}
+	fr.Status = "rejected"
+	db.Save(&fr)
+	c.JSON(http.StatusOK, gin.H{"message": "Friend request rejected"})
+}
+
+func getFriendsList(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var friends []Friendship
+	if err := db.Where("user_id1 = ? OR user_id2 = ?", userID, userID).Find(&friends).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var friendIDs []int
+	for _, f := range friends {
+		if f.UserID1 == userID {
+			friendIDs = append(friendIDs, f.UserID2)
+		} else {
+			friendIDs = append(friendIDs, f.UserID1)
+		}
+	}
+	var users []User
+	if len(friendIDs) > 0 {
+		if err := db.Where("id IN ?", friendIDs).Find(&users).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, users)
+}
+
 func register(c *gin.Context) {
 	var req struct {
 		Name     string `json:"name" binding:"required"`
@@ -800,14 +1013,12 @@ func register(c *gin.Context) {
 		return
 	}
 
-	// Check if user exists
 	var existingUser User
 	if err := db.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Email already registered"})
 		return
 	}
 
-	// Hash password
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
@@ -815,18 +1026,21 @@ func register(c *gin.Context) {
 	}
 
 	newUser := User{
-		Name:  req.Name,
+		Name: req.Name,
 		Email: req.Email,
+		Password: string(hash), // сохраняем хеш пароля в базе
+		Weight: 70,
+		Age: 18,
+		Sex: "other",
+		Height: 170,
 	}
 	if err := db.Create(&newUser).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	userPasswords[newUser.ID] = string(hash)
 	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully", "user_id": newUser.ID})
 }
 
-// Login endpoint
 func login(c *gin.Context) {
 	var req struct {
 		Email    string `json:"email"`
@@ -841,12 +1055,10 @@ func login(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
-	hash := userPasswords[user.ID]
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
-	// Generate JWT
 	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := &Claims{
 		UserID: user.ID,
@@ -863,7 +1075,6 @@ func login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }
 
-// JWT Middleware
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := c.GetHeader("Authorization")
@@ -890,7 +1101,6 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// Get current user info
 func getMe(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var user User
@@ -901,12 +1111,15 @@ func getMe(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// Update current user info
 func updateMe(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var req struct {
-		Name  string `json:"name"`
-		Email string `json:"email"`
+		Name   string  `json:"name"`
+		Email  string  `json:"email"`
+		Weight float64 `json:"weight"`
+		Age    int     `json:"age"`
+		Sex    string  `json:"sex"`
+		Height float64 `json:"height"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -919,6 +1132,18 @@ func updateMe(c *gin.Context) {
 	}
 	user.Name = req.Name
 	user.Email = req.Email
+	if req.Weight != 0 {
+		user.Weight = req.Weight
+	}
+	if req.Age != 0 {
+		user.Age = req.Age
+	}
+	if req.Sex != "" {
+		user.Sex = req.Sex
+	}
+	if req.Height != 0 {
+		user.Height = req.Height
+	}
 	if err := db.Save(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -930,8 +1155,7 @@ func getSettings(c *gin.Context) {
 	userID := c.GetInt("user_id")
 	var settings Settings
 	if err := db.First(&settings, userID).Error; err != nil {
-		// Default settings
-		settings = Settings{UserID: userID, NotificationsEnabled: true, Theme: "light"}
+		settings = Settings{UserID: userID, NotificationsEnabled: true, Theme: "light", WaterGoal: 2000, CaloriesGoal: 2000, StepsGoal: 10000}
 		if err := db.Create(&settings).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -945,6 +1169,9 @@ func updateSettings(c *gin.Context) {
 	var req struct {
 		NotificationsEnabled bool   `json:"notificationsEnabled"`
 		Theme               string `json:"theme"`
+		WaterGoal             int    `json:"water_goal"`
+		CaloriesGoal        int    `json:"calories_goal"`
+		StepsGoal             int    `json:"steps_goal"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -952,8 +1179,7 @@ func updateSettings(c *gin.Context) {
 	}
 	var settings Settings
 	if err := db.First(&settings, userID).Error; err != nil {
-		// Default settings
-		settings = Settings{UserID: userID, NotificationsEnabled: true, Theme: "light"}
+		settings = Settings{UserID: userID, NotificationsEnabled: true, Theme: "light", WaterGoal: 2000, CaloriesGoal: 2000, StepsGoal: 10000}
 		if err := db.Create(&settings).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -961,11 +1187,433 @@ func updateSettings(c *gin.Context) {
 	}
 	settings.NotificationsEnabled = req.NotificationsEnabled
 	settings.Theme = req.Theme
+	settings.WaterGoal = req.WaterGoal
+	settings.CaloriesGoal = req.CaloriesGoal
+	settings.StepsGoal = req.StepsGoal
 	if err := db.Save(&settings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, settings)
+}
+
+func searchUsers(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	q := c.Query("q")
+	if len(q) < 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Query too short"})
+		return
+	}
+	var friends []Friendship
+	if err := db.Where("user_id1 = ? OR user_id2 = ?", userID, userID).Find(&friends).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	friendIDs := map[int]bool{userID: true} // exclude self
+	for _, f := range friends {
+		if f.UserID1 == userID {
+			friendIDs[f.UserID2] = true
+		} else {
+			friendIDs[f.UserID1] = true
+		}
+	}
+	var users []User
+	if err := db.Where("(LOWER(name) LIKE ? OR LOWER(email) LIKE ?)", "%"+q+"%", "%"+q+"%").Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var filtered []User
+	for _, u := range users {
+		if !friendIDs[u.ID] {
+			filtered = append(filtered, u)
+		}
+	}
+	c.JSON(http.StatusOK, filtered)
+}
+
+func postActivity(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var req struct {
+		Type     string `json:"type"`
+		Data     string `json:"data"`
+		IsPublic bool   `json:"is_public"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Type == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid activity"})
+		return
+	}
+	activity := Activity{
+		UserID:   userID,
+		Type:     req.Type,
+		Data:     req.Data,
+		IsPublic: req.IsPublic,
+	}
+	if err := db.Create(&activity).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, activity)
+}
+
+func getFriendsFeed(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var friends []Friendship
+	if err := db.Where("user_id1 = ? OR user_id2 = ?", userID, userID).Find(&friends).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	friendIDs := []int{}
+	for _, f := range friends {
+		if f.UserID1 == userID {
+			friendIDs = append(friendIDs, f.UserID2)
+		} else {
+			friendIDs = append(friendIDs, f.UserID1)
+		}
+	}
+	if len(friendIDs) == 0 {
+		c.JSON(http.StatusOK, []Activity{})
+		return
+	}
+	var activities []Activity
+	if err := db.Where("user_id IN ? AND is_public = ?", friendIDs, true).Order("created_at desc").Find(&activities).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, activities)
+}
+
+func isFriend(userID, friendID int) bool {
+	var f Friendship
+	if err := db.Where("(user_id1 = ? AND user_id2 = ?) OR (user_id1 = ? AND user_id2 = ?)", userID, friendID, friendID, userID).First(&f).Error; err == nil {
+		return true
+	}
+	return false
+}
+
+func getChatHistory(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	friendID, err := strconv.Atoi(c.Param("friend_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid friend_id"})
+		return
+	}
+	if !isFriend(userID, friendID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Not friends"})
+		return
+	}
+	var messages []Message
+	if err := db.Where("(from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)", userID, friendID, friendID, userID).
+		Order("created_at").Find(&messages).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	db.Model(&Message{}).
+		Where("from_user_id = ? AND to_user_id = ? AND read = ?", friendID, userID, false).
+		Update("read", true)
+	c.JSON(http.StatusOK, messages)
+}
+
+func postChatMessage(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	friendID, err := strconv.Atoi(c.Param("friend_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid friend_id"})
+		return
+	}
+	if !isFriend(userID, friendID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Not friends"})
+		return
+	}
+	var req struct { Content string `json:"content"` }
+	if err := c.ShouldBindJSON(&req); err != nil || req.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Empty message"})
+		return
+	}
+	msg := Message{
+		SenderID: userID,
+		RecipientID: friendID,
+		Content:    req.Content,
+	}
+	if err := db.Create(&msg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, msg)
+}
+
+func getWeeklySummary(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	start := c.Query("start")
+	end := c.Query("end")
+	var startTime, endTime time.Time
+	var err error
+	if start != "" {
+		startTime, err = time.Parse("2006-01-02", start)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid start date"})
+			return
+		}
+	} else {
+		startTime = time.Now().AddDate(0, 0, -7)
+	}
+	if end != "" {
+		endTime, err = time.Parse("2006-01-02", end)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid end date"})
+			return
+		}
+	} else {
+		endTime = time.Now()
+	}
+
+	var workouts []Workout
+	db.Where("user_id = ? AND created_at >= ? AND created_at <= ?", userID, startTime, endTime).Find(&workouts)
+	totalWorkouts := len(workouts)
+	totalWorkoutMinutes := 0
+	totalWorkoutCalories := 0
+	workoutByDay := map[string]int{}
+	for _, w := range workouts {
+		totalWorkoutMinutes += w.Duration
+		totalWorkoutCalories += w.Calories
+		day := w.CreatedAt.Format("2006-01-02")
+		workoutByDay[day] += w.Calories
+	}
+
+	var diets []DietEntry
+	db.Where("user_id = ? AND created_at >= ? AND created_at <= ?", userID, startTime, endTime).Find(&diets)
+	totalDietCalories := 0
+	dietByDay := map[string]int{}
+	for _, d := range diets {
+		totalDietCalories += d.Calories
+		var day string
+		if t, ok := any(d).(interface{ GetCreatedAt() time.Time }); ok {
+			day = t.GetCreatedAt().Format("2006-01-02")
+		} else if createdAtField, ok := any(d).(map[string]interface{}); ok && createdAtField["created_at"] != nil {
+			if t, ok := createdAtField["created_at"].(time.Time); ok {
+				day = t.Format("2006-01-02")
+			}
+		}
+		if day == "" {
+			day = time.Now().Format("2006-01-02")
+		}
+		dietByDay[day] += d.Calories
+	}
+
+	var water []WaterIntake
+	db.Where("user_id = ?", userID).Find(&water)
+	totalWater := 0
+	for _, w := range water {
+		totalWater += w.Amount
+	}
+
+	var health []HealthRecord
+	db.Where("user_id = ? AND type = ?", userID, "steps").Find(&health)
+	totalSteps := 0
+	for _, h := range health {
+		if steps, err := strconv.Atoi(h.Value); err == nil {
+			totalSteps += steps
+		}
+	}
+
+	daily := []gin.H{}
+	for d := startTime; !d.After(endTime); d = d.AddDate(0, 0, 1) {
+		dateStr := d.Format("2006-01-02")
+		daily = append(daily, gin.H{
+			"date": dateStr,
+			"burned": workoutByDay[dateStr],
+			"consumed": dietByDay[dateStr],
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"workouts": totalWorkouts,
+		"workout_minutes": totalWorkoutMinutes,
+		"workout_calories": totalWorkoutCalories,
+		"diet_calories": totalDietCalories,
+		"water_ml": totalWater,
+		"steps": totalSteps,
+		"start": startTime.Format("2006-01-02"),
+		"end": endTime.Format("2006-01-02"),
+		"daily_calories": daily,
+	})
+}
+
+func getMonthlySummary(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	start := c.Query("start")
+	end := c.Query("end")
+	var startTime, endTime time.Time
+	var err error
+	if start != "" {
+		startTime, err = time.Parse("2006-01-02", start)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid start date"})
+			return
+		}
+	} else {
+		startTime = time.Now().AddDate(0, 0, -30)
+	}
+	if end != "" {
+		endTime, err = time.Parse("2006-01-02", end)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid end date"})
+			return
+		}
+	} else {
+		endTime = time.Now()
+	}
+
+	var workouts []Workout
+	db.Where("user_id = ? AND created_at >= ? AND created_at <= ?", userID, startTime, endTime).Find(&workouts)
+	totalWorkouts := len(workouts)
+	totalWorkoutMinutes := 0
+	totalWorkoutCalories := 0
+	workoutByDay := map[string]int{}
+	for _, w := range workouts {
+		totalWorkoutMinutes += w.Duration
+		totalWorkoutCalories += w.Calories
+		day := w.CreatedAt.Format("2006-01-02")
+		workoutByDay[day] += w.Calories
+	}
+
+	var diets []DietEntry
+	db.Where("user_id = ? AND created_at >= ? AND created_at <= ?", userID, startTime, endTime).Find(&diets)
+	totalDietCalories := 0
+	dietByDay := map[string]int{}
+	for _, d := range diets {
+		totalDietCalories += d.Calories
+		var day string
+		if t, ok := any(d).(interface{ GetCreatedAt() time.Time }); ok {
+			day = t.GetCreatedAt().Format("2006-01-02")
+		} else if createdAtField, ok := any(d).(map[string]interface{}); ok && createdAtField["created_at"] != nil {
+			if t, ok := createdAtField["created_at"].(time.Time); ok {
+				day = t.Format("2006-01-02")
+			}
+		}
+		if day == "" {
+			day = time.Now().Format("2006-01-02")
+		}
+		dietByDay[day] += d.Calories
+	}
+
+	var water []WaterIntake
+	db.Where("user_id = ?", userID).Find(&water)
+	totalWater := 0
+	for _, w := range water {
+		totalWater += w.Amount
+	}
+
+	var health []HealthRecord
+	db.Where("user_id = ? AND type = ?", userID, "steps").Find(&health)
+	totalSteps := 0
+	for _, h := range health {
+		if steps, err := strconv.Atoi(h.Value); err == nil {
+			totalSteps += steps
+		}
+	}
+
+	daily := []gin.H{}
+	for d := startTime; !d.After(endTime); d = d.AddDate(0, 0, 1) {
+		dateStr := d.Format("2006-01-02")
+		daily = append(daily, gin.H{
+			"date": dateStr,
+			"burned": workoutByDay[dateStr],
+			"consumed": dietByDay[dateStr],
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"workouts": totalWorkouts,
+		"workout_minutes": totalWorkoutMinutes,
+		"workout_calories": totalWorkoutCalories,
+		"diet_calories": totalDietCalories,
+		"water_ml": totalWater,
+		"steps": totalSteps,
+		"start": startTime.Format("2006-01-02"),
+		"end": endTime.Format("2006-01-02"),
+		"daily_calories": daily,
+	})
+}
+
+var badgeCriteria = []struct {
+	Code  string
+	Title string
+	Desc  string
+	Check func(userID int) bool
+}{
+	{
+		Code:  "steps_10k",
+		Title: "10,000 Steps in a Day",
+		Desc:  "Walk 10,000 steps in a single day.",
+		Check: func(userID int) bool {
+			var recs []HealthRecord
+			today := time.Now().Format("2006-01-02")
+			db.Where("user_id = ? AND type = ? AND date = ?", userID, "steps", today).Find(&recs)
+			for _, r := range recs {
+				if v, err := strconv.Atoi(r.Value); err == nil && v >= 10000 {
+					return true
+				}
+			}
+			return false
+		},
+	},
+	{
+		Code:  "streak_7d",
+		Title: "7-Day Activity Streak",
+		Desc:  "Log a workout every day for 7 days in a row.",
+		Check: func(userID int) bool {
+			streak := 0
+			for i := 0; i < 7; i++ {
+				checkDay := time.Now().AddDate(0, 0, -i)
+				var count int64
+				db.Model(&Workout{}).Where("user_id = ? AND DATE(created_at) = ?", userID, checkDay.Format("2006-01-02")).Count(&count)
+				if count > 0 {
+					streak++
+				} else {
+					break
+				}
+			}
+			return streak == 7
+		},
+	},
+	{
+		Code:  "workouts_5w",
+		Title: "5 Workouts in a Week",
+		Desc:  "Complete 5 workouts in a single week.",
+		Check: func(userID int) bool {
+			weekAgo := time.Now().AddDate(0, 0, -6)
+			var count int64
+			db.Model(&Workout{}).Where("user_id = ? AND created_at >= ?", userID, weekAgo).Count(&count)
+			return count >= 5
+		},
+	},
+}
+
+func checkAndAwardBadges(userID int) {
+	for _, crit := range badgeCriteria {
+		var existing Badge
+		err := db.Where("user_id = ? AND code = ?", userID, crit.Code).First(&existing).Error
+		if err == gorm.ErrRecordNotFound && crit.Check(userID) {
+			badge := Badge{
+				UserID: userID,
+				Code:   crit.Code,
+				Title:  crit.Title,
+				Desc:   crit.Desc,
+			}
+			db.Create(&badge)
+		}
+	}
+}
+
+
+func getBadges(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	var badges []Badge
+	if err := db.Where("user_id = ?", userID).Find(&badges).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, badges)
 }
 
 func main() {
@@ -975,7 +1623,6 @@ func main() {
 	}
 	r := gin.Default()
 
-	// Configure CORS to allow Authorization header
 	config := cors.DefaultConfig()
 	config.AllowAllOrigins = true
 	config.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
@@ -1046,6 +1693,21 @@ func main() {
 
 	auth.GET("/settings", getSettings)
 	auth.PUT("/settings", updateSettings)
+
+	r.POST("/friends/request", authMiddleware(), sendFriendRequest)
+	r.GET("/friends/requests", authMiddleware(), getFriendRequests)
+	r.POST("/friends/accept", authMiddleware(), acceptFriendRequest)
+	r.POST("/friends/reject", authMiddleware(), rejectFriendRequest)
+	r.GET("/friends", authMiddleware(), getFriendsList)
+	r.GET("/friends/list", authMiddleware(), getFriendsList)
+	r.GET("/users/search", authMiddleware(), searchUsers)
+	r.POST("/activity", authMiddleware(), postActivity)
+	r.GET("/feed/friends", authMiddleware(), getFriendsFeed)
+	r.GET("/chat/:friend_id", authMiddleware(), getChatHistory)
+	r.POST("/chat/:friend_id", authMiddleware(), postChatMessage)
+	auth.GET("/summary/weekly", getWeeklySummary)
+	auth.GET("/summary/monthly", getMonthlySummary)
+	auth.GET("/badges", authMiddleware(), getBadges) // Register GET /badges endpoint with auth middleware
 
 	initDB()
 	startReminderChecker()
