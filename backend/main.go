@@ -20,7 +20,7 @@ type User struct {
 	ID     int     `json:"id" gorm:"primaryKey;autoIncrement"`
 	Name   string  `json:"name" gorm:"not null"`
 	Email  string  `json:"email" gorm:"unique;not null"`
-	Password string `json:"-" gorm:"not null"` // добавлено поле для хранения хеша пароля
+	Password string `json:"-" gorm:"not null"`
 	Weight float64 `json:"weight" gorm:"default:70"`
 	Age    int     `json:"age" gorm:"default:18"`
 	Sex    string  `json:"sex" gorm:"default:'other'"`
@@ -256,10 +256,10 @@ func createUser(c *gin.Context) {
 		newUser.Age = 18
 	}
 	if newUser.Sex == "" {
-		newUser.Sex = "other"
+		newUser.Sex = "man"
 	}
 	if newUser.Height == 0 {
-		newUser.Height = 170
+		newUser.Height = 175
 	}
 	if err := db.Create(&newUser).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1146,11 +1146,11 @@ func register(c *gin.Context) {
 	newUser := User{
 		Name: req.Name,
 		Email: req.Email,
-		Password: string(hash), // сохраняем хеш пароля в базе
+		Password: string(hash),
 		Weight: 70,
 		Age: 18,
-		Sex: "other",
-		Height: 170,
+		Sex: "man",
+		Height: 175,
 	}
 	if err := db.Create(&newUser).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1212,7 +1212,7 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
-var jwtKey = []byte("your_secret_key")
+var jwtKey = []byte("qwertyuiop")
 
 type Claims struct {
 	UserID int `json:"user_id"`
@@ -1723,7 +1723,6 @@ func checkAndAwardBadges(userID int) {
 	}
 }
 
-// calculateStepsStreak calculates the current streak for steps goal achievement
 func calculateStepsStreak(userID int) int {
 	var settings Settings
 	if err := db.Where("user_id = ?", userID).First(&settings).Error; err != nil {
@@ -1733,7 +1732,6 @@ func calculateStepsStreak(userID int) int {
 	streak := 0
 	today := time.Now()
 
-	// First check if today's goal has been met
 	todayStr := today.Format("2006-01-02")
 	var totalSteps int
 	var records []HealthRecord
@@ -1745,15 +1743,13 @@ func calculateStepsStreak(userID int) int {
 		}
 	}
 
-	// If today's goal is met, start counting from today
 	if totalSteps >= settings.StepsGoal {
 		streak = 1
 	} else {
 		return 0
 	}
 
-	// Then check previous days
-	for i := 1; i < 365; i++ { // Start from 1 since we already checked today
+	for i := 1; i < 365; i++ {
 		checkDate := today.AddDate(0, 0, -i)
 		dateStr := checkDate.Format("2006-01-02")
 
@@ -1777,7 +1773,6 @@ func calculateStepsStreak(userID int) int {
 	return streak
 }
 
-// calculateDietStreak calculates the current streak for diet goal achievement
 func calculateDietStreak(userID int) int {
 	var settings Settings
 	if err := db.Where("user_id = ?", userID).First(&settings).Error; err != nil {
@@ -1787,7 +1782,6 @@ func calculateDietStreak(userID int) int {
 	streak := 0
 	today := time.Now()
 
-	// First check if today's goal has been met
 	todayStr := today.Format("2006-01-02")
 	var totalCalories int
 	var entries []DietEntry
@@ -1797,15 +1791,13 @@ func calculateDietStreak(userID int) int {
 		totalCalories += entry.Calories
 	}
 
-	// If today's goal is met (calories <= goal), start counting from today
 	if totalCalories <= settings.CaloriesGoal {
 		streak = 1
 	} else {
 		return 0
 	}
 
-	// Then check previous days
-	for i := 1; i < 365; i++ { // Start from 1 since we already checked today
+	for i := 1; i < 365; i++ {
 		checkDate := today.AddDate(0, 0, -i)
 		dateStr := checkDate.Format("2006-01-02")
 
@@ -1827,7 +1819,6 @@ func calculateDietStreak(userID int) int {
 	return streak
 }
 
-// calculateWaterStreak calculates the current streak for water goal achievement
 func calculateWaterStreak(userID int) int {
 	var settings Settings
 	if err := db.Where("user_id = ?", userID).First(&settings).Error; err != nil {
@@ -1837,7 +1828,6 @@ func calculateWaterStreak(userID int) int {
 	streak := 0
 	today := time.Now()
 
-	// First check if today's goal has been met
 	todayStr := today.Format("2006-01-02")
 	var totalWater int
 	var intakes []WaterIntake
@@ -1847,15 +1837,13 @@ func calculateWaterStreak(userID int) int {
 		totalWater += intake.Amount
 	}
 
-	// If today's goal is met, start counting from today
 	if totalWater >= settings.WaterGoal {
 		streak = 1
 	} else {
 		return 0
 	}
 
-	// Then check previous days
-	for i := 1; i < 365; i++ { // Start from 1 since we already checked today
+	for i := 1; i < 365; i++ {
 		checkDate := today.AddDate(0, 0, -i)
 		dateStr := checkDate.Format("2006-01-02")
 
@@ -1877,7 +1865,6 @@ func calculateWaterStreak(userID int) int {
 	return streak
 }
 
-// updateStreak updates the streak record for a specific type
 func updateStreak(userID int, streakType string) {
 	today := time.Now().Format("2006-01-02")
 
@@ -1907,7 +1894,6 @@ func updateStreak(userID int, streakType string) {
 		}
 		db.Create(&streak)
 	} else {
-		// Update existing streak record
 		streak.Current = currentStreak
 		if currentStreak > streak.Longest {
 			streak.Longest = currentStreak
@@ -1917,11 +1903,8 @@ func updateStreak(userID int, streakType string) {
 	}
 }
 
-// getStreaks returns all streak records for a user
 func getStreaks(c *gin.Context) {
 	userID := c.GetInt("user_id")
-
-	// Update all streaks first
 	updateStreak(userID, "steps")
 	updateStreak(userID, "diet")
 	updateStreak(userID, "water")
@@ -2037,8 +2020,8 @@ func main() {
 	r.POST("/chat/:friend_id", authMiddleware(), postChatMessage)
 	auth.GET("/summary/weekly", getWeeklySummary)
 	auth.GET("/summary/monthly", getMonthlySummary)
-	auth.GET("/badges", authMiddleware(), getBadges) // Register GET /badges endpoint with auth middleware
-	auth.GET("/streaks", authMiddleware(), getStreaks) // Register GET /streaks endpoint with auth middleware
+	auth.GET("/badges", authMiddleware(), getBadges)
+	auth.GET("/streaks", authMiddleware(), getStreaks)
 
 	initDB()
 	startReminderChecker()

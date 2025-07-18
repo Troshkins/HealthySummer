@@ -2325,7 +2325,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _email = user.email;
         _weight = user.weight;
         _age = user.age;
-        _sex = user.sex;
+        // Приводим _sex к одному из допустимых значений
+        if (user.sex == 'Male' || user.sex == 'Female' || user.sex == 'Other') {
+          _sex = user.sex;
+        } else {
+          _sex = 'Other';
+        }
         _height = user.height;
       } else {
         _error = 'Failed to load profile';
@@ -2336,7 +2341,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _saveProfile() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() { _loading = true; _error = null; });
-    final user = await api.updateMe(_name!, _email!, _weight ?? 70, _age ?? 18, _sex ?? 'other', _height ?? 170);
+    final user = await api.updateMe(_name!, _email!, _weight ?? 70, _age ?? 18, _sex ?? 'Other', _height ?? 170);
     setState(() { _loading = false; });
     if (user != null) {
       setState(() { _editing = false; });
@@ -2386,9 +2391,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
             DropdownButtonFormField<String>(
               value: _sex,
               items: const [
-                DropdownMenuItem(value: 'male', child: Text('Male')),
-                DropdownMenuItem(value: 'female', child: Text('Female')),
-                DropdownMenuItem(value: 'other', child: Text('Other')),
+                DropdownMenuItem(value: 'Male', child: Text('Male')),
+                DropdownMenuItem(value: 'Female', child: Text('Female')),
+                DropdownMenuItem(value: 'Other', child: Text('Other')),
               ],
               onChanged: (v) => setState(() => _sex = v),
               decoration: const InputDecoration(labelText: 'Sex'),
@@ -3146,107 +3151,6 @@ class _FeedScreenState extends State<FeedScreen> {
                 },
               ),
             ),
-        ],
-      ),
-    );
-  }
-}
-
-class ChatScreen extends StatefulWidget {
-  final User friend;
-  ChatScreen({required this.friend});
-
-  @override
-  State<ChatScreen> createState() => _ChatScreenState();
-}
-
-class _ChatScreenState extends State<ChatScreen> {
-  final ApiService api = ApiService();
-  List<dynamic> _messages = [];
-  bool _loading = false;
-  String? _error;
-  final TextEditingController _controller = TextEditingController();
-  Timer? _refreshTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchMessages();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _fetchMessages());
-  }
-
-  @override
-  void dispose() {
-    _refreshTimer?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _fetchMessages() async {
-    setState(() { _loading = true; });
-    try {
-      final messages = await api.getChatHistory(widget.friend.id);
-      setState(() { _messages = messages; _loading = false; });
-    } catch (e) {
-      setState(() { _error = 'Failed to load messages'; _loading = false; });
-    }
-  }
-
-  Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
-    await api.sendChatMessage(widget.friend.id, text);
-    _controller.clear();
-    _fetchMessages();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(widget.friend.name)),
-      body: Column(
-        children: [
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    reverse: true,
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      final m = _messages[_messages.length - 1 - index];
-                      final isMe = m['from_user_id'] == api.currentUserId;
-                      return Align(
-                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 2, horizontal: 8),
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: isMe ? Colors.blue : Colors.grey[300],
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            m['content'],
-                            style: TextStyle(color: isMe ? Colors.white : Colors.black),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _controller,
-                  decoration: const InputDecoration(hintText: 'Type a message...'),
-                  onSubmitted: (_) => _sendMessage(),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.send),
-                onPressed: _sendMessage,
-              ),
-            ],
-          ),
         ],
       ),
     );
