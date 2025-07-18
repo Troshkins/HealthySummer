@@ -141,6 +141,16 @@ type Badge struct {
 	EarnedAt  time.Time `json:"earned_at" gorm:"autoCreateTime"`
 }
 
+type Streak struct {
+	ID        int       `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserID    int       `json:"user_id" gorm:"index;not null"`
+	Type      string    `json:"type" gorm:"not null"` // "steps", "diet", "water"
+	Current   int       `json:"current" gorm:"default:0"`
+	Longest   int       `json:"longest" gorm:"default:0"`
+	LastDate  string    `json:"last_date" gorm:"not null"` // YYYY-MM-DD format
+	UpdatedAt time.Time `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
 var triggeredReminders = struct {
 	m map[int]bool
 	sync.Mutex
@@ -178,6 +188,7 @@ func initDB() {
 		&Activity{},
 		&Message{},
 		&Badge{},
+		&Streak{},
 	)
 	if err != nil {
 		log.Fatalf("failed to auto-migrate models: %v", err)
@@ -447,6 +458,10 @@ func createWaterIntake(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Update streak after creating water intake
+	updateStreak(userID, "water")
+
 	c.JSON(http.StatusCreated, newWater)
 }
 func updateWaterIntake(c *gin.Context) {
@@ -521,6 +536,10 @@ func createDietEntry(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Update streak after creating diet entry
+	updateStreak(userID, "diet")
+
 	c.JSON(http.StatusCreated, newDiet)
 }
 func updateDietEntry(c *gin.Context) {
@@ -807,18 +826,26 @@ func getHealthRecordByID(c *gin.Context) {
 }
 func createHealthRecord(c *gin.Context) {
 	userID := c.GetInt("user_id")
-	var newHealth HealthRecord
-	if err := c.ShouldBindJSON(&newHealth); err != nil {
+	var newRecord HealthRecord
+	if err := c.ShouldBindJSON(&newRecord); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	newHealth.UserID = userID
-	if err := db.Create(&newHealth).Error; err != nil {
+	newRecord.UserID = userID
+	if newRecord.Date == "" {
+		newRecord.Date = time.Now().Format("2006-01-02")
+	}
+	if err := db.Create(&newRecord).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	checkAndAwardBadges(userID) // Award badges after successful health record
-	c.JSON(http.StatusCreated, newHealth)
+
+	// Update streak if this is a steps record
+	if newRecord.Type == "steps" {
+		updateStreak(userID, "steps")
+	}
+
+	c.JSON(http.StatusCreated, newRecord)
 }
 func updateHealthRecord(c *gin.Context) {
 	userID := c.GetInt("user_id")
@@ -1000,6 +1027,97 @@ func getFriendsList(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, users)
+}
+
+func getStreakRankings(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	streakType := c.Query("type") // "steps", "diet", or "water"
+
+	if streakType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Streak type is required"})
+		return
+	}
+
+	// Get user's friends
+	var friends []Friendship
+	if err := db.Where("user_id1 = ? OR user_id2 = ?", userID, userID).Find(&friends).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var friendIDs []int
+	for _, f := range friends {
+		if f.UserID1 == userID {
+			friendIDs = append(friendIDs, f.UserID2)
+		} else {
+			friendIDs = append(friendIDs, f.UserID1)
+		}
+	}
+
+	// Add current user to the list for ranking
+	allUserIDs := append([]int{userID}, friendIDs...)
+
+	// Get streaks for all users (including current user)
+	var streaks []Streak
+	if err := db.Where("user_id IN ? AND type = ?", allUserIDs, streakType).Find(&streaks).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create a map of user ID to streak current value
+	streakMap := make(map[int]int)
+	for _, streak := range streaks {
+		streakMap[streak.UserID] = streak.Current
+	}
+
+	// Sort users by streak (descending)
+	type UserStreak struct {
+		UserID int `json:"user_id"`
+		Streak int `json:"streak"`
+	}
+
+	var userStreaks []UserStreak
+	for _, uid := range allUserIDs {
+		streak := streakMap[uid]
+		userStreaks = append(userStreaks, UserStreak{UserID: uid, Streak: streak})
+	}
+
+	// Sort by streak descending
+	for i := 0; i < len(userStreaks); i++ {
+		for j := i + 1; j < len(userStreaks); j++ {
+			if userStreaks[i].Streak < userStreaks[j].Streak {
+				userStreaks[i], userStreaks[j] = userStreaks[j], userStreaks[i]
+			}
+		}
+	}
+
+	// Find current user's position (1-based ranking)
+	var userPosition int
+	for i, us := range userStreaks {
+		if us.UserID == userID {
+			userPosition = i + 1
+			break
+		}
+	}
+
+	// Count friends with higher streaks
+	friendsWithHigherStreak := 0
+	currentUserStreak := streakMap[userID]
+	for _, uid := range friendIDs {
+		if streakMap[uid] > currentUserStreak {
+			friendsWithHigherStreak++
+		}
+	}
+
+	// Rating is friends with higher streaks + 1
+	rating := friendsWithHigherStreak + 1
+
+	c.JSON(http.StatusOK, gin.H{
+		"rating": rating,
+		"position": userPosition,
+		"total_friends": len(friendIDs),
+		"current_streak": currentUserStreak,
+	})
 }
 
 func register(c *gin.Context) {
@@ -1605,6 +1723,217 @@ func checkAndAwardBadges(userID int) {
 	}
 }
 
+// calculateStepsStreak calculates the current streak for steps goal achievement
+func calculateStepsStreak(userID int) int {
+	var settings Settings
+	if err := db.Where("user_id = ?", userID).First(&settings).Error; err != nil {
+		return 0
+	}
+
+	streak := 0
+	today := time.Now()
+
+	// First check if today's goal has been met
+	todayStr := today.Format("2006-01-02")
+	var totalSteps int
+	var records []HealthRecord
+	db.Where("user_id = ? AND type = ? AND date = ?", userID, "steps", todayStr).Find(&records)
+
+	for _, record := range records {
+		if steps, err := strconv.Atoi(record.Value); err == nil {
+			totalSteps += steps
+		}
+	}
+
+	// If today's goal is met, start counting from today
+	if totalSteps >= settings.StepsGoal {
+		streak = 1
+	} else {
+		return 0
+	}
+
+	// Then check previous days
+	for i := 1; i < 365; i++ { // Start from 1 since we already checked today
+		checkDate := today.AddDate(0, 0, -i)
+		dateStr := checkDate.Format("2006-01-02")
+
+		var totalSteps int
+		var records []HealthRecord
+		db.Where("user_id = ? AND type = ? AND date = ?", userID, "steps", dateStr).Find(&records)
+
+		for _, record := range records {
+			if steps, err := strconv.Atoi(record.Value); err == nil {
+				totalSteps += steps
+			}
+		}
+
+		if totalSteps >= settings.StepsGoal {
+			streak++
+		} else {
+			break
+		}
+	}
+
+	return streak
+}
+
+// calculateDietStreak calculates the current streak for diet goal achievement
+func calculateDietStreak(userID int) int {
+	var settings Settings
+	if err := db.Where("user_id = ?", userID).First(&settings).Error; err != nil {
+		return 0
+	}
+
+	streak := 0
+	today := time.Now()
+
+	// First check if today's goal has been met
+	todayStr := today.Format("2006-01-02")
+	var totalCalories int
+	var entries []DietEntry
+	db.Where("user_id = ? AND DATE(created_at) = ?", userID, todayStr).Find(&entries)
+
+	for _, entry := range entries {
+		totalCalories += entry.Calories
+	}
+
+	// If today's goal is met (calories <= goal), start counting from today
+	if totalCalories <= settings.CaloriesGoal {
+		streak = 1
+	} else {
+		return 0
+	}
+
+	// Then check previous days
+	for i := 1; i < 365; i++ { // Start from 1 since we already checked today
+		checkDate := today.AddDate(0, 0, -i)
+		dateStr := checkDate.Format("2006-01-02")
+
+		var totalCalories int
+		var entries []DietEntry
+		db.Where("user_id = ? AND DATE(created_at) = ?", userID, dateStr).Find(&entries)
+
+		for _, entry := range entries {
+			totalCalories += entry.Calories
+		}
+
+		if totalCalories <= settings.CaloriesGoal {
+			streak++
+		} else {
+			break
+		}
+	}
+
+	return streak
+}
+
+// calculateWaterStreak calculates the current streak for water goal achievement
+func calculateWaterStreak(userID int) int {
+	var settings Settings
+	if err := db.Where("user_id = ?", userID).First(&settings).Error; err != nil {
+		return 0
+	}
+
+	streak := 0
+	today := time.Now()
+
+	// First check if today's goal has been met
+	todayStr := today.Format("2006-01-02")
+	var totalWater int
+	var intakes []WaterIntake
+	db.Where("user_id = ? AND DATE(created_at) = ?", userID, todayStr).Find(&intakes)
+
+	for _, intake := range intakes {
+		totalWater += intake.Amount
+	}
+
+	// If today's goal is met, start counting from today
+	if totalWater >= settings.WaterGoal {
+		streak = 1
+	} else {
+		return 0
+	}
+
+	// Then check previous days
+	for i := 1; i < 365; i++ { // Start from 1 since we already checked today
+		checkDate := today.AddDate(0, 0, -i)
+		dateStr := checkDate.Format("2006-01-02")
+
+		var totalWater int
+		var intakes []WaterIntake
+		db.Where("user_id = ? AND DATE(created_at) = ?", userID, dateStr).Find(&intakes)
+
+		for _, intake := range intakes {
+			totalWater += intake.Amount
+		}
+
+		if totalWater >= settings.WaterGoal {
+			streak++
+		} else {
+			break
+		}
+	}
+
+	return streak
+}
+
+// updateStreak updates the streak record for a specific type
+func updateStreak(userID int, streakType string) {
+	today := time.Now().Format("2006-01-02")
+
+	var streak Streak
+	err := db.Where("user_id = ? AND type = ?", userID, streakType).First(&streak).Error
+
+	var currentStreak int
+	switch streakType {
+	case "steps":
+		currentStreak = calculateStepsStreak(userID)
+	case "diet":
+		currentStreak = calculateDietStreak(userID)
+	case "water":
+		currentStreak = calculateWaterStreak(userID)
+	default:
+		return
+	}
+
+	if err == gorm.ErrRecordNotFound {
+		// Create new streak record
+		streak = Streak{
+			UserID:   userID,
+			Type:     streakType,
+			Current:  currentStreak,
+			Longest:  currentStreak,
+			LastDate: today,
+		}
+		db.Create(&streak)
+	} else {
+		// Update existing streak record
+		streak.Current = currentStreak
+		if currentStreak > streak.Longest {
+			streak.Longest = currentStreak
+		}
+		streak.LastDate = today
+		db.Save(&streak)
+	}
+}
+
+// getStreaks returns all streak records for a user
+func getStreaks(c *gin.Context) {
+	userID := c.GetInt("user_id")
+
+	// Update all streaks first
+	updateStreak(userID, "steps")
+	updateStreak(userID, "diet")
+	updateStreak(userID, "water")
+
+	var streaks []Streak
+	if err := db.Where("user_id = ?", userID).Find(&streaks).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, streaks)
+}
 
 func getBadges(c *gin.Context) {
 	userID := c.GetInt("user_id")
@@ -1700,6 +2029,7 @@ func main() {
 	r.POST("/friends/reject", authMiddleware(), rejectFriendRequest)
 	r.GET("/friends", authMiddleware(), getFriendsList)
 	r.GET("/friends/list", authMiddleware(), getFriendsList)
+	r.GET("/streaks/rankings", authMiddleware(), getStreakRankings)
 	r.GET("/users/search", authMiddleware(), searchUsers)
 	r.POST("/activity", authMiddleware(), postActivity)
 	r.GET("/feed/friends", authMiddleware(), getFriendsFeed)
@@ -1708,6 +2038,7 @@ func main() {
 	auth.GET("/summary/weekly", getWeeklySummary)
 	auth.GET("/summary/monthly", getMonthlySummary)
 	auth.GET("/badges", authMiddleware(), getBadges) // Register GET /badges endpoint with auth middleware
+	auth.GET("/streaks", authMiddleware(), getStreaks) // Register GET /streaks endpoint with auth middleware
 
 	initDB()
 	startReminderChecker()

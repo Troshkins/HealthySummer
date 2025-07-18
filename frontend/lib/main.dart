@@ -292,7 +292,6 @@ class _MainNavigationState extends State<MainNavigation> {
     DietScreen(),
     PeriodsScreen(),
     AwardsScreen(),
-    JourneyScreen(),
     HealthRecordsScreen(),
     RemindersScreen(),
     ProfileScreen(),
@@ -309,7 +308,6 @@ class _MainNavigationState extends State<MainNavigation> {
     BottomNavigationBarItem(icon: Icon(Icons.restaurant), label: 'Diet'),
     BottomNavigationBarItem(icon: Icon(Icons.calendar_today), label: 'Periods'),
     BottomNavigationBarItem(icon: Icon(Icons.emoji_events), label: 'Awards'),
-    BottomNavigationBarItem(icon: Icon(Icons.book), label: 'Journey'),
     BottomNavigationBarItem(icon: Icon(Icons.health_and_safety), label: 'Health'),
     BottomNavigationBarItem(icon: Icon(Icons.alarm), label: 'Reminders'),
     BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
@@ -578,9 +576,9 @@ class _SummaryCard extends StatelessWidget {
             children: [
               Icon(icon, color: color, size: 32),
               const SizedBox(height: 8),
-              Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+              Text(label, style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
-              Text(value, style: Theme.of(context).textTheme.titleLarge?.copyWith(color: color)),
+              Text(value, style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.black)),
             ],
           ),
         ),
@@ -1079,11 +1077,19 @@ class _WaterScreenState extends State<WaterScreen> {
   bool _editingGoal = false;
   String _goalInput = '';
 
+  List<Streak> _streaks = [];
+  bool _streaksLoading = false;
+
+  Map<String, dynamic>? _streakRanking;
+  bool _rankingLoading = false;
+
   @override
   void initState() {
     super.initState();
     _fetchWaterIntakes();
     _fetchWaterGoal();
+    _fetchStreaks();
+    _fetchStreakRanking();
   }
 
   Future<void> _fetchWaterGoal() async {
@@ -1094,6 +1100,26 @@ class _WaterScreenState extends State<WaterScreen> {
       _goalInput = _waterGoal.toString();
       _goalLoading = false;
     });
+  }
+
+  Future<void> _fetchStreaks() async {
+    setState(() { _streaksLoading = true; });
+    try {
+      final streaks = await api.fetchStreaks();
+      setState(() { _streaks = streaks; _streaksLoading = false; });
+    } catch (e) {
+      setState(() { _streaksLoading = false; });
+    }
+  }
+
+  Future<void> _fetchStreakRanking() async {
+    setState(() { _rankingLoading = true; });
+    try {
+      final ranking = await api.fetchStreakRanking('water');
+      setState(() { _streakRanking = ranking; _rankingLoading = false; });
+    } catch (e) {
+      setState(() { _rankingLoading = false; });
+    }
   }
 
   Future<void> _updateWaterGoal() async {
@@ -1113,6 +1139,7 @@ class _WaterScreenState extends State<WaterScreen> {
         _waterGoal = updated?.waterGoal ?? _waterGoal;
         _goalLoading = false;
       });
+      _fetchStreaks(); // Refresh streaks after goal update
     } else {
       setState(() { _goalLoading = false; });
     }
@@ -1121,6 +1148,15 @@ class _WaterScreenState extends State<WaterScreen> {
   int get _todayIntake {
     final today = DateTime.now();
     return _waterIntakes.fold(0, (sum, w) => sum + w.amount);
+  }
+
+  Streak? get _waterStreak {
+    return _streaks.where((s) => s.type == 'water').firstOrNull;
+  }
+
+  // Check if we should refresh streaks based on current intake
+  bool get _shouldRefreshStreaks {
+    return _todayIntake >= _waterGoal * 0.9; // When at 90% of goal
   }
 
   Future<void> _fetchWaterIntakes() async {
@@ -1163,6 +1199,7 @@ class _WaterScreenState extends State<WaterScreen> {
       setState(() { _formLoading = false; _showForm = false; });
       if (updated != null) {
         _fetchWaterIntakes();
+        _fetchStreaks(); // Refresh streaks after update
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Water intake updated')));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to update water intake')));
@@ -1176,6 +1213,11 @@ class _WaterScreenState extends State<WaterScreen> {
       setState(() { _formLoading = false; _showForm = false; });
       if (created != null) {
         _fetchWaterIntakes();
+        // Refresh streaks if we're approaching or reaching the goal
+        if (_shouldRefreshStreaks) {
+          _fetchStreaks();
+          _fetchStreakRanking();
+        }
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Water intake added')));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to add water intake')));
@@ -1248,6 +1290,107 @@ class _WaterScreenState extends State<WaterScreen> {
           ),
           const SizedBox(height: 4),
           Text('Today: $_todayIntake / $_waterGoal ml'),
+
+          // Streak Information
+          const SizedBox(height: 16),
+          if (_streaksLoading)
+            const CircularProgressIndicator()
+          else if (_waterStreak != null)
+            Card(
+              color: (_todayIntake >= _waterGoal) ? Colors.blue.withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          (_todayIntake >= _waterGoal) ? Icons.local_fire_department : Icons.trending_up,
+                          color: (_todayIntake >= _waterGoal) ? Colors.orange : Colors.grey,
+                          size: 24,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Water Streak',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Current: ${_waterStreak!.current} days',
+                              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                color: (_todayIntake >= _waterGoal) ? Colors.blue : Colors.grey,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              'Longest: ${_waterStreak!.longest} days',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                            if (_streakRanking != null)
+                              Text(
+                                'Ranking: #${_streakRanking!['rating']} among friends',
+                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: Colors.black,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                          ],
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (_todayIntake >= _waterGoal)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  'Goal Achieved!',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            if (_rankingLoading)
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.refresh),
+            label: const Text('Refresh Streaks'),
+            onPressed: () {
+              _fetchStreaks();
+              _fetchStreakRanking();
+            },
+          ),
+
           if (_showForm)
             Form(
               key: _formKey,
@@ -1336,11 +1479,19 @@ class _DietScreenState extends State<DietScreen> {
   bool _editingGoal = false;
   String _goalInput = '';
 
+  List<Streak> _streaks = [];
+  bool _streaksLoading = false;
+
+  Map<String, dynamic>? _streakRanking;
+  bool _rankingLoading = false;
+
   @override
   void initState() {
     super.initState();
     _fetchDietEntries();
     _fetchCaloriesGoal();
+    _fetchStreaks();
+    _fetchStreakRanking();
   }
 
   Future<void> _fetchCaloriesGoal() async {
@@ -1351,6 +1502,26 @@ class _DietScreenState extends State<DietScreen> {
       _goalInput = _caloriesGoal.toString();
       _goalLoading = false;
     });
+  }
+
+  Future<void> _fetchStreaks() async {
+    setState(() { _streaksLoading = true; });
+    try {
+      final streaks = await api.fetchStreaks();
+      setState(() { _streaks = streaks; _streaksLoading = false; });
+    } catch (e) {
+      setState(() { _streaksLoading = false; });
+    }
+  }
+
+  Future<void> _fetchStreakRanking() async {
+    setState(() { _rankingLoading = true; });
+    try {
+      final ranking = await api.fetchStreakRanking('diet');
+      setState(() { _streakRanking = ranking; _rankingLoading = false; });
+    } catch (e) {
+      setState(() { _rankingLoading = false; });
+    }
   }
 
   Future<void> _updateCaloriesGoal() async {
@@ -1370,6 +1541,7 @@ class _DietScreenState extends State<DietScreen> {
         _caloriesGoal = updated?.caloriesGoal ?? _caloriesGoal;
         _goalLoading = false;
       });
+      _fetchStreaks(); // Refresh streaks after goal update
     } else {
       setState(() { _goalLoading = false; });
     }
@@ -1378,6 +1550,15 @@ class _DietScreenState extends State<DietScreen> {
   int get _todayCalories {
     final today = DateTime.now();
     return _dietEntries.fold(0, (sum, d) => sum + d.calories);
+  }
+
+  Streak? get _dietStreak {
+    return _streaks.where((s) => s.type == 'diet').firstOrNull;
+  }
+
+  // Check if we should refresh streaks based on current calories
+  bool get _shouldRefreshStreaks {
+    return _todayCalories >= _caloriesGoal * 0.9; // When at 90% of goal
   }
 
   Future<void> _fetchDietEntries() async {
@@ -1426,6 +1607,7 @@ class _DietScreenState extends State<DietScreen> {
       setState(() { _formLoading = false; _showForm = false; });
       if (updated != null) {
         _fetchDietEntries();
+        _fetchStreaks(); // Refresh streaks after update
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Diet entry updated')));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to update diet entry')));
@@ -1441,6 +1623,11 @@ class _DietScreenState extends State<DietScreen> {
       setState(() { _formLoading = false; _showForm = false; });
       if (created != null) {
         _fetchDietEntries();
+        // Refresh streaks if we're approaching or reaching the goal
+        if (_shouldRefreshStreaks) {
+          _fetchStreaks();
+          _fetchStreakRanking();
+        }
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Diet entry added')));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to add diet entry')));
@@ -1513,6 +1700,107 @@ class _DietScreenState extends State<DietScreen> {
           ),
           const SizedBox(height: 4),
           Text('Today: $_todayCalories / $_caloriesGoal kcal'),
+
+          // Streak Information
+          const SizedBox(height: 16),
+          if (_streaksLoading)
+            const CircularProgressIndicator()
+          else if (_dietStreak != null)
+            Card(
+              color: (_todayCalories >= _caloriesGoal) ? Colors.orange.withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          (_todayCalories >= _caloriesGoal) ? Icons.local_fire_department : Icons.trending_up,
+                          color: (_todayCalories >= _caloriesGoal) ? Colors.orange : Colors.grey,
+                          size: 24,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Diet Streak',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Current: ${_dietStreak!.current} days',
+                              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                color: (_todayCalories >= _caloriesGoal) ? Colors.orange : Colors.grey,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              'Longest: ${_dietStreak!.longest} days',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                            if (_streakRanking != null)
+                              Text(
+                                'Ranking: #${_streakRanking!['rating']} among friends',
+                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: Colors.black,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                          ],
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (_todayCalories >= _caloriesGoal)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  'Goal Achieved!',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            if (_rankingLoading)
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.refresh),
+            label: const Text('Refresh Streaks'),
+            onPressed: () {
+              _fetchStreaks();
+              _fetchStreakRanking();
+            },
+          ),
+
           if (_showForm)
             Form(
               key: _formKey,
@@ -1805,40 +2093,7 @@ class AwardsScreen extends StatelessWidget {
   }
 }
 
-class JourneyScreen extends StatelessWidget {
-  final ApiService api = ApiService();
 
-  JourneyScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<Journey>>(
-      future: api.fetchJourneys(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const CircularProgressIndicator();
-        } else if (snapshot.hasError) {
-          return Text('Error: \\${snapshot.error}');
-        } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return const Text('No journey posts found.');
-        } else {
-          final journeys = snapshot.data!;
-          return ListView.builder(
-            itemCount: journeys.length,
-            itemBuilder: (context, index) {
-              final journey = journeys[index];
-              return ListTile(
-                leading: const Icon(Icons.book),
-                title: Text(journey.content),
-                subtitle: Text('Date: ${journey.date}, User ID: ${journey.userId}'),
-              );
-            },
-          );
-        }
-      },
-    );
-  }
-}
 
 class HealthRecordsScreen extends StatefulWidget {
   HealthRecordsScreen({super.key});
@@ -2483,11 +2738,18 @@ class _StepsScreenState extends State<StepsScreen> {
   String _goalInput = '';
   late MockStepsProvider _mockProvider;
   bool _started = false;
+  List<Streak> _streaks = [];
+  bool _streaksLoading = false;
+
+  Map<String, dynamic>? _streakRanking;
+  bool _rankingLoading = false;
 
   @override
   void initState() {
     super.initState();
     _fetchStepsGoal();
+    _fetchStreaks();
+    _fetchStreakRanking();
     _startMockProvider();
   }
 
@@ -2501,6 +2763,26 @@ class _StepsScreenState extends State<StepsScreen> {
     });
   }
 
+  Future<void> _fetchStreaks() async {
+    setState(() { _streaksLoading = true; });
+    try {
+      final streaks = await api.fetchStreaks();
+      setState(() { _streaks = streaks; _streaksLoading = false; });
+    } catch (e) {
+      setState(() { _streaksLoading = false; });
+    }
+  }
+
+  Future<void> _fetchStreakRanking() async {
+    setState(() { _rankingLoading = true; });
+    try {
+      final ranking = await api.fetchStreakRanking('steps');
+      setState(() { _streakRanking = ranking; _rankingLoading = false; });
+    } catch (e) {
+      setState(() { _rankingLoading = false; });
+    }
+  }
+
   Future<void> _updateStepsGoal() async {
     setState(() { _goalLoading = true; });
     final settings = await api.fetchSettings();
@@ -2512,6 +2794,7 @@ class _StepsScreenState extends State<StepsScreen> {
           _stepsGoal = refreshed?.stepsGoal ?? updated.stepsGoal;
           _editingGoal = false;
         });
+        _fetchStreaks(); // Refresh streaks after goal update
       }
     }
     setState(() { _goalLoading = false; });
@@ -2521,9 +2804,30 @@ class _StepsScreenState extends State<StepsScreen> {
     if (_started) return;
     _mockProvider = MockStepsProvider(onStep: (steps) {
       setState(() { _todaySteps = steps; });
+
+      // Create steps record every 100 steps and refresh streaks
+      if (steps % 100 == 0 && steps > 0) {
+        _createStepsRecord(steps);
+      }
+
+      // Refresh streaks when approaching or reaching the goal
+      if (steps >= _stepsGoal * 0.9) { // When at 90% of goal
+        _fetchStreaks();
+        _fetchStreakRanking();
+      }
     });
     _mockProvider.start();
     _started = true;
+  }
+
+  Future<void> _createStepsRecord(int steps) async {
+    try {
+      await api.createStepsRecord(steps);
+      _fetchStreaks(); // Refresh streaks after creating steps record
+      _fetchStreakRanking();
+    } catch (e) {
+      // Silently handle errors for mock data
+    }
   }
 
   @override
@@ -2532,8 +2836,15 @@ class _StepsScreenState extends State<StepsScreen> {
     super.dispose();
   }
 
+  Streak? get _stepsStreak {
+    return _streaks.where((s) => s.type == 'steps').firstOrNull;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final stepsStreak = _stepsStreak;
+    final isGoalAchieved = _todaySteps >= _stepsGoal;
+
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: Column(
@@ -2572,6 +2883,106 @@ class _StepsScreenState extends State<StepsScreen> {
           ),
           const SizedBox(height: 4),
           Text('Today: $_todaySteps / $_stepsGoal steps'),
+
+          // Streak Information
+          const SizedBox(height: 16),
+          if (_streaksLoading)
+            const CircularProgressIndicator()
+          else if (stepsStreak != null)
+            Card(
+              color: isGoalAchieved ? Colors.blue.withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          isGoalAchieved ? Icons.local_fire_department : Icons.trending_up,
+                          color: isGoalAchieved ? Colors.blue : Colors.grey,
+                          size: 24,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Steps Streak',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Current: ${stepsStreak.current} days',
+                              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                color: isGoalAchieved ? Colors.blue : Colors.grey,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              'Longest: ${stepsStreak.longest} days',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                            if (_streakRanking != null)
+                              Text(
+                                'Ranking: #${_streakRanking!['rating']} among friends',
+                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: Colors.black,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                          ],
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (isGoalAchieved)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  'Goal Achieved!',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            if (_rankingLoading)
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.refresh),
+            label: const Text('Refresh Streaks'),
+            onPressed: () {
+              _fetchStreaks();
+              _fetchStreakRanking();
+            },
+          ),
         ],
       ),
     );

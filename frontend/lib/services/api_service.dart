@@ -59,6 +59,48 @@ class Settings {
   }
 }
 
+class Streak {
+  final int id;
+  final int userId;
+  final String type;
+  final int current;
+  final int longest;
+  final String lastDate;
+  final DateTime updatedAt;
+
+  Streak({
+    required this.id,
+    required this.userId,
+    required this.type,
+    required this.current,
+    required this.longest,
+    required this.lastDate,
+    required this.updatedAt,
+  });
+
+  factory Streak.fromJson(Map<String, dynamic> json) {
+    return Streak(
+      id: json['id'],
+      userId: json['user_id'],
+      type: json['type'],
+      current: json['current'] ?? 0,
+      longest: json['longest'] ?? 0,
+      lastDate: json['last_date'],
+      updatedAt: DateTime.parse(json['updated_at']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'user_id': userId,
+    'type': type,
+    'current': current,
+    'longest': longest,
+    'last_date': lastDate,
+    'updated_at': updatedAt.toIso8601String(),
+  };
+}
+
 class Reminder {
   final int id;
   final String time;
@@ -210,19 +252,7 @@ class ApiService {
     }
   }
 
-  Future<List<Journey>> fetchJourneys() async {
-    final token = await getToken();
-    final response = await http.get(
-      Uri.parse('$baseUrl/journeys'),
-      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
-    );
-    if (response.statusCode == 200) {
-      final List<dynamic> data = json.decode(response.body);
-      return data.map((json) => Journey.fromJson(json)).toList();
-    } else {
-      throw Exception('Failed to load journeys');
-    }
-  }
+
 
   Future<List<HealthRecord>> fetchHealthRecords() async {
     final token = await getToken();
@@ -235,20 +265,6 @@ class ApiService {
       return data.map((json) => HealthRecord.fromJson(json)).toList();
     } else {
       throw Exception('Failed to load health records');
-    }
-  }
-
-  Future<List<Reminder>> fetchReminders() async {
-    final token = await getToken();
-    final response = await http.get(
-      Uri.parse('$baseUrl/reminders'),
-      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
-    );
-    if (response.statusCode == 200) {
-      final List<dynamic> data = json.decode(response.body);
-      return data.map((json) => Reminder.fromJson(json)).toList();
-    } else {
-      throw Exception('Failed to load reminders');
     }
   }
 
@@ -775,6 +791,68 @@ class ApiService {
     }
   }
 
+  Future<List<Streak>> fetchStreaks() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('$baseUrl/streaks'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => Streak.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to load streaks');
+    }
+  }
+
+  Future<Map<String, dynamic>?> fetchStreakRanking(String streakType) async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('$baseUrl/streaks/rankings?type=$streakType'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      return null;
+    }
+  }
+
+  Future<List<Reminder>> fetchReminders() async {
+    final token = await getToken();
+    final response = await http.get(
+      Uri.parse('$baseUrl/reminders'),
+      headers: token != null ? {'Authorization': 'Bearer $token'} : {},
+    );
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => Reminder.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to load reminders');
+    }
+  }
+
+  Future<HealthRecord?> createStepsRecord(int steps) async {
+    final token = await getToken();
+    final response = await http.post(
+      Uri.parse('$baseUrl/healthrecords'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: json.encode({
+        'type': 'steps',
+        'value': steps.toString(),
+        'date': DateTime.now().toIso8601String().split('T')[0], // YYYY-MM-DD format
+      }),
+    );
+    if (response.statusCode == 201) {
+      return HealthRecord.fromJson(json.decode(response.body));
+    } else {
+      throw Exception('Failed to create steps record');
+    }
+  }
+
   Future<List<Friend>> fetchFriends() async {
     final token = await getToken();
     final response = await http.get(
@@ -1061,23 +1139,7 @@ class Award {
   }
 }
 
-class Journey {
-  final int id;
-  final int userId;
-  final String content;
-  final String date;
 
-  Journey({required this.id, required this.userId, required this.content, required this.date});
-
-  factory Journey.fromJson(Map<String, dynamic> json) {
-    return Journey(
-      id: json['id'],
-      userId: json['user_id'],
-      content: json['content'],
-      date: json['date'],
-    );
-  }
-}
 
 class HealthRecord {
   final int id;
